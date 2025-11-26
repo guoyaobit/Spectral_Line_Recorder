@@ -1,0 +1,59 @@
+
+Debug: True
+recv_streams: 16 
+Storage_folder: /data/
+# total_nfft: 16777216 # Nfft or Fre channels
+# queue_capacity: 256
+observation_mode: 1      # 观测模式 0: baseband 1:spcetrum
+
+# integration_t: 1 # Intergration time
+# win_bw: 1e6 # window bandwidth hz
+# win_channels: 65536 # window channels 
+# master_node_ip:  192.168.101.2
+
+# subbands:
+#   - start_freq: 0
+#     end_freq: 256e6
+#   # recv port from compute node
+#     windows: 
+#     - center_freq: 32e6
+
+#     - center_freq: 64e6
+
+#     - center_freq: 128e6
+
+#     - center_freq: 132e6
+#   # recv port from compute node
+#   - start_freq: 0
+#     end_freq: 256e6
+#     windows: 
+#     - center_freq: 32e6
+#     - center_freq: 64e6
+#     - center_freq: 32e6
+#     - center_freq: 64e6
+
+
+#   # - gpu_id: 1
+#   #   start_freq: 0
+#   #   end_freq: 256e6
+
+#   # - gpu_id: 1
+#   #   start_freq: 0
+#   #   end_freq: 256e6  
+
+#   # - gpu_id: 2
+#   #   start_freq: 0
+#   #   end_freq: 256e6
+
+#   # - gpu_id: 2
+#   #   start_freq: 0
+#   #   end_freq: 256e6
+
+#   # - gpu_id: 3
+#   #   start_freq: 0
+#   #   end_freq: 256e6
+
+#   # - gpu_id: 3
+#   #   start_freq: 0
+#   #   end_freq: 256e6  
+
