@@ -58,7 +58,7 @@ public:
     double hwexposr; // Duration of fixed integration on FPGA/GPU [s]
     double filtnep;  // PFB filter noise-equivalent parameter
     double sttmjd;   // Observation start time [double MJD]
-
+    
 public:
     HdrInfo()
     {

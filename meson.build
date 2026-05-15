@@ -1,6 +1,6 @@
 project('7mm_writer', ['c', 'cpp'],
   version: '1.0',
-  default_options: ['warning_level=2', 'c_std=gnu11', 'cpp_std=c++20']
+  default_options: ['warning_level=2', 'c_std=gnu11']
 )
 
 inc = include_directories('include')
@@ -19,7 +19,7 @@ dpdk_lib = static_library('dpdk',
 
 executable('Writer',
   ['src/main.cpp',
-  'src/sdfits_writer.cpp'
+  'src/sdfits.cpp'
   ],
   include_directories: inc,
   dependencies:  [cfitsio_dep,yaml,spdlog_dep],

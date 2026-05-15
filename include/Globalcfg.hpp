@@ -151,16 +151,7 @@ public:
     // std::vector<moodycamel::BlockingReaderWriterCircularBuffer<PacketBatch *>> g_in_queues;
     // std::vector<std::vector<PacketBatch *>> g_in_pools;
     // std::vector<SubbandConfig> subbands;
-    std::string getTimeString()
-    {
-        auto now = std::chrono::system_clock::now();
-        std::time_t t = std::chrono::system_clock::to_time_t(now);
-        std::tm localTime{};
-        localtime_r(&t, &localTime);
-        std::ostringstream oss;
-        oss << std::put_time(&localTime, "%Y-%m-%d_%H-%M-%S");
-        return oss.str();
-    }
+
     // 初始化 YAML 配置
     bool initFromYaml(const std::string &filename)
     {
@@ -175,21 +166,21 @@ public:
             if (config["Storage_folder"])
                 folder = config["Storage_folder"].as<std::string>();
 
-            std::string folderName = getTimeString();
-            std::string targetPath = folder + "/" + folderName;
-            // 创建文件夹
-            if (mkdir(targetPath.c_str(), 0755) != 0)
-            {
-                perror("mkdir failed");
-                return 1;
-            }
+            // std::string folderName = getTimeString();
+            // std::string targetPath = folder + "/" + folderName;
+            // // 创建文件夹
+            // if (mkdir(targetPath.c_str(), 0755) != 0)
+            // {
+            //     perror("mkdir failed");
+            //     return 1;
+            // }
 
             // 切换工作目录
-            if (chdir(targetPath.c_str()) != 0)
-            {
-                perror("chdir failed");
-                return 1;
-            }
+            // if (chdir(targetPath.c_str()) != 0)
+            // {
+            //     perror("chdir failed");
+            //     return 1;
+            // }
             // if (config["master_node_ip"] && config["master_node_ip"].IsScalar())
             // {
             //     master_node_ip = config["master_node_ip"].as<std::string>();

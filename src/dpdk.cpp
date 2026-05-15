@@ -25,7 +25,7 @@
 #include "readerwritercircularbuffer.h"
 #include <unordered_map>
 
-// #include "sdfits.h"
+#include "sdfits.h"
 #include "sdfits_writer.h"
 #define RX_RING_SIZE 8192
 #define NUM_MBUFS 262144
@@ -250,7 +250,7 @@ lcore_recv(void *arg)
     // int batch_idx = 0;
     // int pkt_idx_inbatch = 0;
     cfg.logger_->debug("Running locre_recv thread on port {} ,queue {} ,on core {}", port, queue_id, lcore_id);
-    auto fd = open("/data/dpdk_capture.bin", O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    // auto fd = open("/data/dpdk_capture.bin", O_CREAT | O_WRONLY | O_TRUNC, 0644);
     while (1)
     {
         nb_rx = rte_eth_rx_burst(port, queue_id, bufs, BURST_SIZE);
@@ -312,7 +312,6 @@ lcore_recv(void *arg)
     }
     return 0;
 }
-
 
 #define SPECTRUM_HEADER_SIZE (sizeof(spectrum_header))
 
@@ -382,7 +381,16 @@ struct BandKey
         return f_start == o.f_start && f_stop == o.f_stop;
     }
 };
-
+std::string getTimeString()
+{
+    auto now = std::chrono::system_clock::now();
+    std::time_t t = std::chrono::system_clock::to_time_t(now);
+    std::tm localTime{};
+    localtime_r(&t, &localTime);
+    std::ostringstream oss;
+    oss << std::put_time(&localTime, "%Y-%m-%d_%H-%M-%S");
+    return oss.str();
+}
 struct BandKeyHash
 {
     size_t operator()(const BandKey &k) const noexcept
@@ -392,62 +400,77 @@ struct BandKeyHash
         return h1 ^ (h2 << 1);
     }
 };
-std::unordered_map<BandKey, SDFITSWriter *, BandKeyHash> writers;
+std::unordered_map<BandKey, sdfits *, BandKeyHash> writers;
 // 核心函数：接收 UDP 包 + 多包重组 + 合并 + 写文件
-void receive_packet(const spectrum_header &hdr, const float *payload, size_t payload_len_bytes)
+void receive_packet(const spectrum_header &pkthdr, const float *payload, size_t payload_len_bytes)
 {
-    FrameKey key{hdr.timestamp_ns, hdr.subband_start_freq, hdr.subband_end_freq, hdr.window_id};
+    FrameKey key{pkthdr.timestamp_ns, pkthdr.subband_start_freq, pkthdr.subband_end_freq, pkthdr.window_id};
     SpectrumFrame *frame;
 
     auto it = frame_map.find(key);
     if (it == frame_map.end())
     {
         // not found
-        frame = new SpectrumFrame(hdr.total_pkt, hdr.n_channels);
+        frame = new SpectrumFrame(pkthdr.total_pkt, pkthdr.n_channels);
         frame_map[key] = frame;
     }
     else
         frame = it->second;
 
     // 保存当前包数据
-    frame->packets[hdr.pkt_id].assign(payload, payload + payload_len_bytes / sizeof(float));
+    frame->packets[pkthdr.pkt_id].assign(payload, payload + payload_len_bytes / sizeof(float));
     frame->received_pkt++;
 
     // 完整帧处理
     if (frame->received_pkt == frame->total_pkt)
     {
+
         std::vector<float> full;
         full.reserve(frame->n_channels);
         for (auto &pkt : frame->packets)
             full.insert(full.end(), pkt.begin(), pkt.end());
 
-        double f_start = hdr.start_freq_hz;
-        double f_stop = f_start + hdr.channel_bw_hz*hdr.n_channels;
+        double f_start = pkthdr.start_freq_hz;
+        double f_stop = f_start + pkthdr.channel_bw_hz * pkthdr.n_channels;
 
-        BandKey filekey{hdr.start_freq_hz, hdr.channel_bw_hz};
-        SDFITSWriter *writer = nullptr;
+        BandKey filekey{pkthdr.start_freq_hz, pkthdr.channel_bw_hz};
+        // SDFITSWriter *writer = nullptr;
+        sdfits *writer = nullptr;
         // // 查找是否已经存在文件
         auto it = writers.find(filekey);
         if (it == writers.end())
         {
             // 生成文件名：f_start_f_stopMHz.fits
-            char fname[128];
-            sprintf(fname, "%.2f_%.2fMHz_%d.fits", f_start / 1e6, f_stop / 1e6,hdr.n_channels);
+            // char fname[128];
+            // sprintf(fname, "%.2f_%.2fMHz_%d.fits", f_start / 1e6, f_stop / 1e6,pkthdr.n_channels);
 
             // 创建新的写入器
-            writer = new SDFITSWriter(fname,hdr);
+            // writer = new SDFITSWriter(fname,pkthdr);
+            writer = new sdfits();
+            writer->new_file = 1;
+            // writer->basefilename = fname;
+            // strncpy(writer->basefilename,cfg.folder.c_str(),cfg.folder.length());
+            sprintf(writer->basefilename, "%s%s/%.2f_%.2fMHz_%d.fits",cfg.folder.c_str(),getTimeString().c_str(),f_start / 1e6, f_stop / 1e6, pkthdr.n_channels);
             writers[filekey] = writer;
-            cfg.logger_->info("create file name {}",fname);
+            writer->hdr.nchan = pkthdr.n_channels;
+            writer->hdr.nsubband = 1;
+            writer->hdr.npol = 2;
+            writer->sdfits_create();
+            // cfg.logger_->info("create filename {}",writer->filename);
         }
         else
         {
             writer = it->second;
         }
+        writer->data_columns.data = (unsigned char *)full.data();
+
+        writer->sdfits_write_subint();
+        
         // // 写入当前帧
-        writer->append_frame(hdr.timestamp_ns, full);
+        // writer->append_frame(pkthdr.timestamp_ns, full);
 
         // // 写二进制文件
-        // std::ofstream out(std::to_string(hdr.start_freq_hz) + "_" + std::to_string(hdr.channel_bw_hz) + "_" + std::to_string(hdr.timestamp_ns) +
+        // std::ofstream out(std::to_string(pkthdr.start_freq_hz) + "_" + std::to_string(pkthdr.channel_bw_hz) + "_" + std::to_string(pkthdr.timestamp_ns) +
         //                       +".bin",
         //                   std::ios::binary);
         // out.write(reinterpret_cast<char *>(full.data()), full.size() * sizeof(float));
@@ -477,19 +500,20 @@ recv2mem(void *args)
         }
         uint8_t *udp_payload = rte_pktmbuf_mtod_offset(mbuf, uint8_t *, 42);
 
-        spectrum_header hdr;
-        memcpy(&hdr, udp_payload, sizeof(spectrum_header));
+        spectrum_header pkthdr;
+        memcpy(&pkthdr, udp_payload, sizeof(spectrum_header));
 
         // payload 数据指针
         float *payload = reinterpret_cast<float *>(udp_payload + sizeof(spectrum_header));
         size_t payload_len_bytes = rte_pktmbuf_data_len(mbuf) - 42 - sizeof(spectrum_header);
-        // printf("%f\n",hdr.start_freq_hz);
+        // printf("%f\n",pkthdr.start_freq_hz);
         // 调用核心函数处理
         // if(cfg.observation_mode == 0)
         // {
-            //   fwrite(playload,len,1,fp);
+        //   fwrite(playload,len,1,fp);
         // }
-        receive_packet(hdr, payload, payload_len_bytes);
+        
+        receive_packet(pkthdr, payload, payload_len_bytes);
 
         rte_pktmbuf_free(mbuf);
     }
@@ -676,7 +700,6 @@ int dpdk()
         rte_eal_remote_launch(lcore_recv, &lcore_params[i], lcore_params[i].lcore_id);
         lastcore_id = lcore_params[i].lcore_id + 1;
     }
-
     for (int i = 0; i < lcore_params.size(); ++i)
     {
         struct lcore_param *recv_param = new lcore_param;

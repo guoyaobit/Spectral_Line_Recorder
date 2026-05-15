@@ -50,8 +50,9 @@ int sdfits::sdfits_create()
     //     exit(1);
     // }
 
-    printf("Opening file '%s'\n", filename);
+    // printf("Opening file '%s'\n", filename);
     sprintf(template_file, "%s/%s", vegas_dir, SDFITS_TEMPLATE);
+    // printf("%s\n",template_file);
     fits_create_template(&(fptr), filename, template_file, &status);
 
     // Check to see if file was successfully created
@@ -105,8 +106,8 @@ int sdfits::sdfits_create()
     // Update the column sizes for the colums containing arrays
     itmp = hdr.nsubband * hdr.nchan * 4; // num elements, not bytes
  
-    // fits_modify_vector_len(fptr, 20, itmp, &status);         // DATA
-    // fits_modify_vector_len(fptr, 14, hdr.nsubband, &status); // SUBFREQ
+    fits_modify_vector_len(fptr, 20, itmp, &status);         // DATA
+    fits_modify_vector_len(fptr, 14, hdr.nsubband, &status); // SUBFREQ
 
     // Update the TDIM field for the data column
     sprintf(ctmp, "(%d,%d,4,1,1)", hdr.nchan, hdr.nsubband);
@@ -124,7 +125,6 @@ int sdfits::sdfits_write_subint()
     double temp_dbl;
 
     int nivals = hdr.nchan * hdr.nsubband * 4; // 4 stokes parameters
-
     // Create the initial file or change to a new one if needed.
     if (new_file || (multifile == 1 && rownum > rows_per_file))
     {
@@ -140,7 +140,7 @@ int sdfits::sdfits_write_subint()
     temp_str = data_columns.object;
     temp_dbl = 0.0;
     data_columns.centre_freq_idx++;
-    data_columns.integ_num = 111;
+    // data_columns.integ_num = ;
     fits_write_col(fptr, TDOUBLE, 1, row, 1, 1, &(data_columns.time), &status);
     fits_write_col(fptr, TINT, 2, row, 1, 1, &(data_columns.time_counter), &status);
     fits_write_col(fptr, TINT, 3, row, 1, 1, &(data_columns.integ_num), &status);
@@ -162,8 +162,10 @@ int sdfits::sdfits_write_subint()
     fits_write_col(fptr, TDOUBLE, 19, row, 1, 1, &(data_columns.dec), &status);
     fits_write_col(fptr, TFLOAT, 20, row, 1, nivals, data_columns.data, &status);
 
-    //  std::cout <<status<<std::endl ;
+    
     fits_flush_file(fptr, &status);
+    if (status)
+        fits_report_error(stderr, status);
     // Flush the buffers if not finished with the file
     // Note:  this use is not entirely in keeping with the CFITSIO
     //        documentation recommendations.  However, manually
