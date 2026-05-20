@@ -1,5 +1,10 @@
 
-Debug: True
+Debug: true
+# name of observ object
+object: test
+# on/off true/false
+source_on: true
+# source_on: false
 recv_streams: 16 
 Storage_folder: /data/
 # total_nfft: 16777216 # Nfft or Fre channels

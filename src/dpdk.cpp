@@ -450,7 +450,14 @@ void receive_packet(const spectrum_header &pkthdr, const float *payload, size_t 
             writer->new_file = 1;
             // writer->basefilename = fname;
             // strncpy(writer->basefilename,cfg.folder.c_str(),cfg.folder.length());
-            sprintf(writer->basefilename, "%s%s/%.2f_%.2fMHz_%d.fits",cfg.folder.c_str(),getTimeString().c_str(),f_start / 1e6, f_stop / 1e6, pkthdr.n_channels);
+            std::string source_on="OFF";
+            if(cfg.source_on)
+                source_on = "ON";
+            sprintf(writer->basefilename, "%s/%s_%s_%s/%.2f_%.2fMHz_%d.fits",
+                cfg.folder.c_str(),
+                cfg.object.c_str(),source_on.c_str(),
+                getTimeString().c_str(),
+                f_start / 1e6, f_stop / 1e6, pkthdr.n_channels);
             writers[filekey] = writer;
             writer->hdr.nchan = pkthdr.n_channels;
             writer->hdr.nsubband = 1;

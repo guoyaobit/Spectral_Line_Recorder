@@ -120,6 +120,8 @@ public:
     // default para
     int recv_streams = 8;
     std::string folder = "";
+    std::string object = "";
+    bool source_on = true;
 
     // const int sampling_rate = 256e6; // samaping rate
     // std::string master_node_ip;
@@ -165,7 +167,10 @@ public:
                 recv_streams = config["recv_streams"].as<int>();
             if (config["Storage_folder"])
                 folder = config["Storage_folder"].as<std::string>();
-
+            if(config["object"])
+                object = config["object"].as<std::string>();
+            if(config["source_on"])
+                source_on = config["source_on"].as<bool>();
             // std::string folderName = getTimeString();
             // std::string targetPath = folder + "/" + folderName;
             // // 创建文件夹
