@@ -77,7 +77,7 @@ public:
         cal_freq = 0.0;
         cal_dcyc = 0.0;
         cal_phs = 0.0;
-        npol = 0;
+        npol = 4;
         nchan = 0;
         chan_bw = 0.0;
         nsubband = 0;
@@ -147,13 +147,16 @@ public:
     char data_len[16];   // Length of the data array
     char data_dims[16];  // Data matrix dimensions
     unsigned char *data; // Pointer to the raw data itself
-
+    // ---- New fields to record noise source (cal) state per row ----
+    int cal_on;        // 0 = noise diode OFF, 1 = ON (per-row state)
+    double cal_phase;  // optional: calibration phase (if applicable), otherwise 0.0
 public:
     // Default constructor
     sdfits_data_columns()
         : time(0.0), time_counter(0), integ_num(0), exposure(0.0), azimuth(0.0),
           elevation(0.0), bmaj(0.0), bmin(0.0), bpa(0.0), accumid(0),
           sttspec(0), stpspec(0), centre_freq_idx(0.0), ra(0.0), dec(0.0), data(nullptr)
+          ,cal_on(0), cal_phase(0.0)
     {
         std::memset(object, 0, sizeof(object));
         std::memset(data_len, 0, sizeof(data_len));
@@ -165,10 +168,12 @@ public:
     sdfits_data_columns(double t, unsigned long int counter, int num, float exp, const char *obj,
                         float az, float el, float bm, float bn, float bp, int acc_id,
                         int start_spec, int end_spec, float freq_idx, const double *freq,
-                        double r, double d, const char *d_len, const char *d_dims, unsigned char *raw_data)
+                        double r, double d, const char *d_len, const char *d_dims, unsigned char *raw_data,
+                    int calon = 0, double calph = 0.0)
         : time(t), time_counter(counter), integ_num(num), exposure(exp), azimuth(az),
           elevation(el), bmaj(bm), bmin(bn), bpa(bp), accumid(acc_id),
-          sttspec(start_spec), stpspec(end_spec), centre_freq_idx(freq_idx), ra(r), dec(d), data(raw_data)
+          sttspec(start_spec), stpspec(end_spec), centre_freq_idx(freq_idx), ra(r), dec(d), data(raw_data),
+          cal_on(calon), cal_phase(calph)
     {
         std::strncpy(object, obj, sizeof(object) - 1);
         std::memset(data_len, 0, sizeof(data_len));

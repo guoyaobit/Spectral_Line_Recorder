@@ -1,4 +1,4 @@
-project('7mm_writer', ['c', 'cpp'],
+project('7mm_recorder', ['c', 'cpp'],
   version: '1.0',
   default_options: ['warning_level=2', 'c_std=gnu11']
 )
@@ -17,7 +17,7 @@ dpdk_lib = static_library('dpdk',
   dependencies: dpdk_dep
 )
 
-executable('Writer',
+executable('7mm_recorder',
   ['src/main.cpp',
   'src/sdfits.cpp'
   ],

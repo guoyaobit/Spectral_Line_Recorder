@@ -27,12 +27,13 @@ typedef struct
     uint16_t pkt_id;
     uint16_t total_pkt;
     uint32_t n_channels;
-    char cal_mode[16]; // Cal mode (OFF, SYNC, EXT1, EXT2)
-    double cal_freq;   // Cal modulation frequency (Hz)
-    double cal_dcyc;   // Cal duty cycle (0-1)
-    double cal_phs;    // Cal phase (wrt start time)
+    // char cal_mode[16]; // Cal mode (OFF, SYNC, EXT1, EXT2)
+    // double cal_freq;   // Cal modulation frequency (Hz)
+    // double cal_dcyc;   // Cal duty cycle (0-1)
+    // double cal_phs;    // Cal phase (wrt start time)
     double ra;         // RA mid-integration
     double dec;        // DEC mid-integration
+    uint8_t noise_state;
 } spectrum_header;
 
 #pragma pack(pop)

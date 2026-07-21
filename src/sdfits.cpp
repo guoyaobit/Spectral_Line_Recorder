@@ -102,16 +102,42 @@ int sdfits::sdfits_create()
     fits_update_key(fptr, TDOUBLE, "HWEXPOSR", &(hdr.hwexposr), NULL, &status);
     fits_update_key(fptr, TDOUBLE, "FILTNEP", &(hdr.filtnep), NULL, &status);
     fits_update_key(fptr, TDOUBLE, "STTMJD", &(hdr.sttmjd), NULL, &status);
+    /* 计算 DATA 向量的元素数（使用 hdr.npol 而非硬编码 4） */
+    long nvec = (long)hdr.nsubband * (long)hdr.nchan * (long)hdr.npol; /* num elements */
+
+    /* 动态取得列号，避免依赖模板中固定的列序 */
+    int data_col = 0, subfreq_col = 0;
+    fits_get_colnum(fptr, CASEINSEN, "DATA", &data_col, &status);
+    if (status) {
+        fits_report_error(stderr, status);
+        return status;
+    }
+    fits_get_colnum(fptr, CASEINSEN, "SUBFREQ", &subfreq_col, &status);
+    if (status) {
+        fits_report_error(stderr, status);
+        return status;
+    }
+
+    /* 修改列向量长度（repeat counts）*/
+    fits_modify_vector_len(fptr, data_col, nvec, &status);                 /* DATA */
+    fits_modify_vector_len(fptr, subfreq_col, (long)hdr.nsubband, &status); /* SUBFREQ */
+
+    /* 更新 TDIM<colnum>，使用 hdr.npol */
+    char tdim_key[32], tdim_val[64];
+    snprintf(tdim_key, sizeof(tdim_key), "TDIM%d", data_col);
+    snprintf(tdim_val, sizeof(tdim_val), "(%d,%d,%d,1,1)", hdr.nchan, hdr.nsubband, hdr.npol);
+    fits_update_key(fptr, TSTRING, tdim_key, tdim_val, NULL, &status);
+
 
     // Update the column sizes for the colums containing arrays
-    itmp = hdr.nsubband * hdr.nchan * 4; // num elements, not bytes
+    // itmp = hdr.nsubband * hdr.nchan * hdr.npol; // num elements, not bytes
  
-    fits_modify_vector_len(fptr, 20, itmp, &status);         // DATA
-    fits_modify_vector_len(fptr, 14, hdr.nsubband, &status); // SUBFREQ
+    // fits_modify_vector_len(fptr, 20, itmp, &status);         // DATA
+    // fits_modify_vector_len(fptr, 14, hdr.nsubband, &status); // SUBFREQ
 
-    // Update the TDIM field for the data column
-    sprintf(ctmp, "(%d,%d,4,1,1)", hdr.nchan, hdr.nsubband);
-    fits_update_key(fptr, TSTRING, "TDIM20", ctmp, NULL, &status);
+    // // Update the TDIM field for the data column
+    // sprintf(ctmp, "(%d,%d,4,1,1)", hdr.nchan, hdr.nsubband);
+    // fits_update_key(fptr, TSTRING, "TDIM20", ctmp, NULL, &status);
 
     fits_flush_file(fptr, &status);
 
@@ -124,7 +150,7 @@ int sdfits::sdfits_write_subint()
     char *temp_str;
     double temp_dbl;
 
-    int nivals = hdr.nchan * hdr.nsubband * 4; // 4 stokes parameters
+    int nivals = hdr.nchan * hdr.nsubband * hdr.npol; // 4 stokes parameters
     // Create the initial file or change to a new one if needed.
     if (new_file || (multifile == 1 && rownum > rows_per_file))
     {
@@ -161,7 +187,8 @@ int sdfits::sdfits_write_subint()
     fits_write_col(fptr, TDOUBLE, 18, row, 1, 1, &(data_columns.ra), &status);
     fits_write_col(fptr, TDOUBLE, 19, row, 1, 1, &(data_columns.dec), &status);
     fits_write_col(fptr, TFLOAT, 20, row, 1, nivals, data_columns.data, &status);
-
+    fits_write_col(fptr, TINT, 21, row, 1, 1, &(data_columns.cal_on), &status);
+    // fits_write_col(fptr, TDOUBLE, 22, row, 1, 1, &(data_columns.cal_phase), &status);
     
     fits_flush_file(fptr, &status);
     if (status)

@@ -51,13 +51,13 @@ SCAN    =                    * / Scan number (float)
 #
 HDRVER  = '1.0             '   / Header version 
 FITSTYPE= 'SDFITS          '   / FITS definition for pulsar data files
-INSTRUME= 'VEGAS'              / Backend ID
+INSTRUME= 'NANSHAN'              / Backend ID
 COORD_MD= 'J2000'              / Coordinate mode (J2000, GAL, ECLIP, etc.)
 CAL_MODE= 'OFF'                / Cal mode (OFF, SYNC, EXT1, EXT2)
 CAL_FREQ= 0.0                  / [Hz] Cal modulation frequency (E)
 CAL_DCYC= 0.0                  / Cal duty cycle (E)
 CAL_PHS = 0.0                  / Cal phase (wrt start time) (E)
-NPOL    =                    * / Number of antenna polarisations
+NPOL    =  4                  * / Number of antenna polarisations
 NCHAN   =                    * / Number of spectral bins per sub-band
 CHAN_BW =                    * / bandwidth of each spectral bin (resolution)
 #
@@ -148,4 +148,8 @@ TFORM#  = '1E      '           / Length of data array (e.g. 131072E)
 TDIM#   = '        '           / Matrix dimensions (e.g. 8,4096,4,1,1)
 TMATX#  =                    T / This is a matrix
 #
+TTYPE#  = 'NOISE '           / noise state
+TFORM#  = '1J      '           / 32-bit integer
+#
+
 END

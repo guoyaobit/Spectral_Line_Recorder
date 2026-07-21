@@ -141,40 +141,6 @@ create_catch_all_drop(uint16_t port_id)
     return flow;
 }
 
-// FILE *init_log_append(const char *filename)
-// {
-//     FILE *logfile = fopen(filename, "a"); // "a" 模式：追加
-//     if (!logfile)
-//     {
-//         perror("Failed to open log file");
-//     }
-//     else
-//     {
-//         // 如果是新文件，可以写表头，这里不写表头，避免重复
-//         // fprintf(logfile, "m_seconds,m_frame_number\n");
-//         fflush(logfile);
-//     }
-//     return logfile;
-// }
-
-// // 写一条记录
-// void log_packet(FILE *logfile, uint64_t m_seconds, uint32_t m_frame_number)
-// {
-//     if (logfile)
-//     {
-//         fprintf(logfile, "%" PRIu64 ",%u\n", m_seconds, m_frame_number);
-//         fflush(logfile); // 可选：保证实时写入
-//     }
-// }
-// // 关闭文件
-// void close_log(FILE *logfile)
-// {
-//     if (logfile)
-//     {
-//         fclose(logfile);
-//         logfile = nullptr;
-//     }
-// }
 static int
 port_init(uint16_t port, struct rte_mempool *mbuf_pool, uint16_t nb_rx_queues)
 {
@@ -283,31 +249,8 @@ lcore_recv(void *arg)
             struct rte_udp_hdr *udp_hdr = (struct rte_udp_hdr *)((unsigned char *)ip_hdr + sizeof(struct rte_ipv4_hdr));
             // uint32_t dst_ip = rte_be_to_cpu_32(ip_hdr->dst_addr);
             uint16_t dst_port = rte_be_to_cpu_16(udp_hdr->dst_port);
-            // printf("%d\n", dst_port);
-            // if (queue_id < cfg.recv_streams)
-            // if (dst_port == param->dest_port)
-            // {
             rte_ring *ring = rx_rings[queue_id];
-            // rte_pktmbuf_free(mbuf);
             rte_ring_enqueue(ring, mbuf);
-
-            // if (dst_port - 60000 < cfg.recv_streams and dst_port - 60000 >= 0)
-            // {
-            //     int stream_id = dst_port - 60000;
-
-            //     // void *data = rte_pktmbuf_mtod(mbuf, void *);
-            //     // uint16_t len = rte_pktmbuf_pkt_len(mbuf);
-            //     // write(fd, data, len);
-            //     // fsync(fd);
-            //     rte_ring *ring = rx_rings[stream_id];
-            //     // rte_pktmbuf_free(mbuf);
-            //     rte_ring_enqueue(ring, mbuf);
-            // }
-            // else
-            // {
-            //     // printf("%d,%d\n",dst_port,param->dest_port);
-            //     rte_pktmbuf_free(mbuf);
-            // }
         }
     }
     return 0;
@@ -460,8 +403,10 @@ void receive_packet(const spectrum_header &pkthdr, const float *payload, size_t 
                 f_start / 1e6, f_stop / 1e6, pkthdr.n_channels);
             writers[filekey] = writer;
             writer->hdr.nchan = pkthdr.n_channels;
+            writer->hdr.chan_bw = pkthdr.channel_bw_hz;
+            writer->hdr.obsfreq = pkthdr.start_freq_hz+pkthdr.channel_bw_hz*pkthdr.n_channels/2;
             writer->hdr.nsubband = 1;
-            writer->hdr.npol = 2;
+            writer->hdr.npol = 4;
             writer->sdfits_create();
             // cfg.logger_->info("create filename {}",writer->filename);
         }
@@ -470,20 +415,9 @@ void receive_packet(const spectrum_header &pkthdr, const float *payload, size_t 
             writer = it->second;
         }
         writer->data_columns.data = (unsigned char *)full.data();
-
+        writer->data_columns.cal_on = pkthdr.noise_state;
+        // printf("%d\n",pkthdr.noise_state);
         writer->sdfits_write_subint();
-        
-        // // 写入当前帧
-        // writer->append_frame(pkthdr.timestamp_ns, full);
-
-        // // 写二进制文件
-        // std::ofstream out(std::to_string(pkthdr.start_freq_hz) + "_" + std::to_string(pkthdr.channel_bw_hz) + "_" + std::to_string(pkthdr.timestamp_ns) +
-        //                       +".bin",
-        //                   std::ios::binary);
-        // out.write(reinterpret_cast<char *>(full.data()), full.size() * sizeof(float));
-
-        // out.close();
-        // 清理
         delete frame;
         frame_map.erase(key);
     }
@@ -513,13 +447,6 @@ recv2mem(void *args)
         // payload 数据指针
         float *payload = reinterpret_cast<float *>(udp_payload + sizeof(spectrum_header));
         size_t payload_len_bytes = rte_pktmbuf_data_len(mbuf) - 42 - sizeof(spectrum_header);
-        // printf("%f\n",pkthdr.start_freq_hz);
-        // 调用核心函数处理
-        // if(cfg.observation_mode == 0)
-        // {
-        //   fwrite(playload,len,1,fp);
-        // }
-        
         receive_packet(pkthdr, payload, payload_len_bytes);
 
         rte_pktmbuf_free(mbuf);
@@ -540,43 +467,6 @@ inline int get_port_by_name(const std::string &name)
     }
     return -1;
 }
-// std::vector<lcore_param> generate_lcore_params(uint16_t num_ports,
-//                                                uint16_t queues_per_port,
-//                                                uint16_t start_dest_port)
-// {
-//     std::vector<lcore_param> params;
-//     std::vector<uint16_t> next_lcore(RTE_MAX_NUMA_NODES, 1); // 从 1 开始，跳过 lcore 0
-
-//     for (uint16_t port = 0; port < num_ports; ++port) {
-//         uint16_t socket = rte_eth_dev_socket_id(port);
-
-//         for (uint16_t q = 0; q < queues_per_port; ++q) {
-//             uint16_t lcore_id = RTE_MAX_LCORE;
-
-//             for (uint16_t lc = next_lcore[socket]; lc < RTE_MAX_LCORE; ++lc) {
-//                 if (rte_lcore_is_enabled(lc) &&
-//                     rte_lcore_to_socket_id(lc) == socket)
-//                 {
-//                     lcore_id = lc;
-//                     next_lcore[socket] = lc + 1; // 下一个从这里开始
-//                     break;
-//                 }
-//             }
-//             if (lcore_id == RTE_MAX_LCORE) {
-//                 std::cerr << "Not enough lcores on NUMA socket " << socket << std::endl;
-//                 exit(EXIT_FAILURE);
-//             }
-//             lcore_param p;
-//             p.port_id   = port;
-//             p.queue_id  = q;
-//             p.lcore_id  = lcore_id;
-//             p.dest_port = start_dest_port + q;
-//             params.push_back(p);
-//         }
-//     }
-
-//     return params;
-// }
 
 std::vector<lcore_param> generate_lcore_params(const std::vector<uint16_t> &port_ids,
                                                uint16_t queues_per_port,
@@ -656,7 +546,7 @@ std::vector<lcore_param> generate_lcore_params(const std::vector<uint16_t> &port
 int dpdk()
 {
     char *argv[] = {
-        "7mm_recv", // name
+        "7mm_recorder", // name
         "-n", "4",  // Mem_channels
         // "--",
         // "-p","0x3",
@@ -700,10 +590,6 @@ int dpdk()
     int lastcore_id;
     for (int i = 0; i < lcore_params.size(); ++i)
     {
-        // printf("%d\n", lcore_params[i].dest_port);
-        // printf("%d\n", lcore_params[i].port_id);
-        // printf("%d\n", lcore_params[i].lcore_id);
-        // printf("%d\n", lcore_params[i].port_id);
         rte_eal_remote_launch(lcore_recv, &lcore_params[i], lcore_params[i].lcore_id);
         lastcore_id = lcore_params[i].lcore_id + 1;
     }
