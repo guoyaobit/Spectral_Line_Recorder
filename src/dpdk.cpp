@@ -32,7 +32,8 @@
 #define MBUF_CACHE_SIZE 512
 #define BURST_SIZE 128
 #define RING_SIZE 8192
-
+#define SPECTRUM_MAGIC 0x534C5231
+#define SPECTRUM_VERSION 1
 // #define recv_streams 4
 auto &cfg = GlobalConfig::getInstance();
 constexpr size_t EXPECTED_PKT_LEN = 8266;
@@ -193,7 +194,9 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool, uint16_t nb_rx_queues)
     // create_catch_all_drop(port);
     // printf("🚀 Port %d ready, listening on UDP 60000-60003\n", port);
 
-    // rte_eth_promiscuous_enable(port);
+    // disable promisc
+    rte_eth_promiscuous_disable(port);
+    rte_eth_allmulticast_disable(port);
     return 0;
 }
 // packet recving  thread
@@ -226,13 +229,7 @@ lcore_recv(void *arg)
         for (int i = 0; i < nb_rx; i++)
         {
             struct rte_mbuf *mbuf = bufs[i];
-            size_t datalen = rte_pktmbuf_pkt_len(mbuf);
-            // if (datalen != EXPECTED_PKT_LEN)
-            // {
-            //     // printf("Droping packet data len = %d\n", datalen);
-            //     rte_pktmbuf_free(mbuf);
-            //     continue;
-            // }
+            // size_t datalen = rte_pktmbuf_pkt_len(mbuf);
             /**prase udp header */
             struct rte_ether_hdr *eth_hdr = rte_pktmbuf_mtod(mbuf, struct rte_ether_hdr *);
             if (eth_hdr->ether_type != rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4))
@@ -443,10 +440,31 @@ recv2mem(void *args)
 
         spectrum_header pkthdr;
         memcpy(&pkthdr, udp_payload, sizeof(spectrum_header));
-
+        if(pkthdr.magic != SPECTRUM_MAGIC || pkthdr.version != SPECTRUM_VERSION)
+        {
+            rte_pktmbuf_free(mbuf);
+            continue;
+        }
         // payload 数据指针
         float *payload = reinterpret_cast<float *>(udp_payload + sizeof(spectrum_header));
-        size_t payload_len_bytes = rte_pktmbuf_data_len(mbuf) - 42 - sizeof(spectrum_header);
+        int pkt_len = rte_pktmbuf_pkt_len(mbuf);
+        if(pkt_len <= 42 + sizeof(spectrum_header))
+        {
+            rte_pktmbuf_free(mbuf);
+            continue;
+        }
+        size_t payload_len_bytes =
+            pkt_len - 42 - sizeof(spectrum_header);
+        if (pkthdr.pkt_id >= pkthdr.total_pkt)
+        {
+            rte_pktmbuf_free(mbuf);
+            continue;
+        }
+        if(payload_len_bytes % sizeof(float) != 0)
+        {
+            rte_pktmbuf_free(mbuf);
+            continue;
+        }
         receive_packet(pkthdr, payload, payload_len_bytes);
 
         rte_pktmbuf_free(mbuf);

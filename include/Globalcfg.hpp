@@ -17,6 +17,8 @@
 #pragma pack(push, 1)
 typedef struct
 {
+    uint32_t magic;
+    uint16_t version;
     uint64_t timestamp_ns;
     uint16_t subband_id; // 子频段编号
     uint16_t window_id;  // window id
