@@ -413,6 +413,8 @@ void receive_packet(const spectrum_header &pkthdr, const float *payload, size_t 
         }
         writer->data_columns.data = (unsigned char *)full.data();
         writer->data_columns.cal_on = pkthdr.noise_state;
+        writer->data_columns.time = 40587 + pkthdr.timestamp_ns/1e9/86400; // 转换为秒
+        writer->data_columns.exposure = pkthdr.exposure;
         // printf("%d\n",pkthdr.noise_state);
         writer->sdfits_write_subint();
         delete frame;

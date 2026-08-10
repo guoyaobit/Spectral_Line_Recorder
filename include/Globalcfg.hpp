@@ -15,29 +15,40 @@
 #include <iomanip>
 #include <sys/stat.h> 
 #pragma pack(push, 1)
-typedef struct
-{
-    uint32_t magic;
-    uint16_t version;
-    uint64_t timestamp_ns;
-    uint16_t subband_id; // 子频段编号
-    uint16_t window_id;  // window id
-    uint32_t subband_start_freq;
-    uint32_t subband_end_freq;
-    float start_freq_hz;
-    float channel_bw_hz;
-    uint16_t pkt_id;
-    uint16_t total_pkt;
-    uint32_t n_channels;
-    // char cal_mode[16]; // Cal mode (OFF, SYNC, EXT1, EXT2)
-    // double cal_freq;   // Cal modulation frequency (Hz)
-    // double cal_dcyc;   // Cal duty cycle (0-1)
-    // double cal_phs;    // Cal phase (wrt start time)
-    double ra;         // RA mid-integration
-    double dec;        // DEC mid-integration
-    uint8_t noise_state;
-} spectrum_header;
+typedef struct {
+  uint32_t magic ;//= 0x534C5231; // "SLR1"
+  uint16_t version = 1;
+  // UTC integration center time
+  // Unix epoch nanoseconds
+  uint64_t timestamp_ns;
+  // observation identification
+  uint32_t obs_id;         // observation ID
+  uint32_t integration_id; // integration counter
+  // frequency information
+  uint16_t subband_id; // 子频段编号
+  uint16_t window_id;  // window id
+  double subband_start_freq;
+  double subband_end_freq;
+  double start_freq_hz;
+  double channel_bw_hz;
+  uint32_t n_channels;
+  uint8_t stokes;
+  // packet fragmentation
+  uint16_t pkt_id;
+  uint16_t total_pkt;
+  // integration
+  float exposure; // seconds
+  // calibration
+  uint8_t noise_state; // OFF=0 ON=1 MIX=2
+  uint8_t cal_mode;    // optional
+  uint16_t reserved2;
 
+  // telescope direction
+  double ra;  // rad
+  double dec; // rad
+  // data quality
+  uint32_t flags; // overflow/dropout/etc
+} spectrum_header;
 #pragma pack(pop)
 // struct Packet
 // {
