@@ -24,9 +24,9 @@
 #include "readerwriterqueue.h"
 #include "readerwritercircularbuffer.h"
 #include <unordered_map>
-
+#include <ctime>
 #include "sdfits.h"
-#include "sdfits_writer.h"
+// #include "sdfits_writer.h"
 #define RX_RING_SIZE 8192
 #define NUM_MBUFS 262144
 #define MBUF_CACHE_SIZE 512
@@ -340,6 +340,20 @@ struct BandKeyHash
         return h1 ^ (h2 << 1);
     }
 };
+void get_date_obs(uint64_t timestamp_ns, char date_obs[16])
+{
+    time_t sec = static_cast<time_t>(timestamp_ns / 1000000000ULL);
+
+    struct tm utc_tm;
+    gmtime_r(&sec, &utc_tm);
+
+    snprintf(date_obs,
+             16,
+             "%02d/%02d/%02d",
+             utc_tm.tm_mday,
+             utc_tm.tm_mon + 1,
+             utc_tm.tm_year % 100);
+}
 std::unordered_map<BandKey, sdfits *, BandKeyHash> writers;
 // 核心函数：接收 UDP 包 + 多包重组 + 合并 + 写文件
 void receive_packet(const spectrum_header &pkthdr, const float *payload, size_t payload_len_bytes)
@@ -393,13 +407,16 @@ void receive_packet(const spectrum_header &pkthdr, const float *payload, size_t 
             std::string source_on="OFF";
             if(cfg.source_on)
                 source_on = "ON";
-            sprintf(writer->basefilename, "%s/%s_%s_%s/%.2f_%.2fMHz_%d.fits",
+            sprintf(writer->basefilename, "%s/%s_%s_%s/%.2f_%.2fMHz_%d.sdfits",
                 cfg.folder.c_str(),
                 cfg.object.c_str(),source_on.c_str(),
                 getTimeString().c_str(),
                 f_start / 1e6, f_stop / 1e6, pkthdr.n_channels);
             writers[filekey] = writer;
             writer->hdr.nchan = pkthdr.n_channels;
+            get_date_obs(pkthdr.timestamp_ns-
+                static_cast<uint64_t>(pkthdr.exposure * 0.5 * 1e9), 
+                writer->hdr.date_obs);
             writer->hdr.chan_bw = pkthdr.channel_bw_hz;
             writer->hdr.obsfreq = pkthdr.start_freq_hz+pkthdr.channel_bw_hz*pkthdr.n_channels/2;
             writer->hdr.nsubband = 1;

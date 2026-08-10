@@ -36,7 +36,7 @@ int sdfits::sdfits_create()
     filenum++;
     rownum = 1;
 
-    sprintf(filename, "%s_%04d.fits", basefilename, filenum);
+    sprintf(filename, "%s_%04d.sdfits", basefilename, filenum);
 
     // Create basic FITS file from our template
     // char *vegas_dir = getenv("VEGAS_DIR");
