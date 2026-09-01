@@ -146,7 +146,7 @@ public:
     // int win_channels = 4096;
     // double integration_t = 1;
     int observation_mode = 1; // 默认单窗口分子谱线模式
-
+    bool Debug_mode = false;
     // int batchsize() const { return total_nfft / 4096; }
     // // 每次 FFT 的时间长度
     // double fft_period() const
@@ -175,6 +175,8 @@ public:
         {
             YAML::Node config = YAML::LoadFile(filename);
             // std::cout<<recv_streams<<std::endl;
+            if (config["Debug"])
+                Debug_mode = config["Debug"].as<bool>();
             if (config["observation_mode"])
                 observation_mode = config["observation_mode"].as<int>();
             if (config["recv_streams"])
