@@ -1,6 +1,10 @@
 project('7mm_recorder', ['c', 'cpp'],
   version: '1.0',
-  default_options: ['warning_level=2', 'c_std=gnu11']
+  default_options: [
+    'warning_level=2',
+    'c_std=gnu11',
+    'cpp_std=c++17'
+  ]
 )
 
 inc = include_directories('include')
@@ -19,7 +23,8 @@ dpdk_lib = static_library('dpdk',
 
 executable('7mm_recorder',
   ['src/main.cpp',
-  'src/sdfits.cpp'
+  'src/sdfits.cpp',
+  'src/ContinuumFits.cpp'
   ],
   include_directories: inc,
   dependencies:  [cfitsio_dep,yaml,spdlog_dep],
