@@ -68,12 +68,12 @@ public:
     GlobalConfig(const GlobalConfig &) = delete;
     GlobalConfig &operator=(const GlobalConfig &) = delete;
     std::shared_ptr<spdlog::logger> logger_;
-    ObservationMode observation_mode = ObservationMode::SPECTRAL; // 默认单窗口分子谱线模式
+    ObservationMode observation_mode = ObservationMode::SPECTRAL; // 默认分子谱线模式
     ObservationMode parseObservationMode(const YAML::Node &node) {
         const int mode = node.as<int>();
         switch (mode) {
-        case 0:
-        return ObservationMode::BASEBAND;
+        // case 0:
+        // return ObservationMode::BASEBAND;
         case 1:
         return ObservationMode::SPECTRAL;
         case 2:
@@ -81,7 +81,7 @@ public:
         default:
         throw std::runtime_error(
             "Invalid observation_mode: " + std::to_string(mode) +
-            " (valid values: 0, 1, 2)");
+            " (valid values: 1, 2)");
         }
     }
     void initlog()

@@ -29,7 +29,7 @@
 #include "sdfits.h"
 #include "ContinuumFits.h"
 // #include "sdfits_writer.h"
-#define RX_RING_SIZE 8192
+#define nb_rxd_SIZE 8192
 #define NUM_MBUFS 262144
 #define MBUF_CACHE_SIZE 512
 #define BURST_SIZE 128
@@ -53,104 +53,12 @@ struct lcore_param
 
 #define MAX_PORTS 2
 
-static inline uint32_t simple_port_hash(uint16_t dst_port)
-{
-    return (uint32_t)dst_port;
-}
-
-static struct rte_flow *
-create_udp_dst_flow(uint16_t port_id, uint16_t dst_port, uint16_t queue_id)
-{
-    struct rte_flow_attr attr;
-    struct rte_flow_item pattern[4];
-    struct rte_flow_action action[2];
-    struct rte_flow_item_udp udp_spec, udp_mask;
-    struct rte_flow_action_queue queue = {.index = queue_id};
-    struct rte_flow_error error;
-    struct rte_flow *flow = NULL;
-
-    memset(&attr, 0, sizeof(attr));
-    attr.ingress = 1;  // 入方向流量
-    attr.priority = 0; // 优先级（0最高）
-
-    // pattern: ETH → IPv4 → UDP (目的端口匹配)
-    memset(pattern, 0, sizeof(pattern));
-    pattern[0].type = RTE_FLOW_ITEM_TYPE_ETH;
-    pattern[1].type = RTE_FLOW_ITEM_TYPE_IPV4;
-
-    memset(&udp_spec, 0, sizeof(udp_spec));
-    memset(&udp_mask, 0, sizeof(udp_mask));
-    udp_spec.hdr.dst_port = rte_cpu_to_be_16(dst_port);
-    udp_mask.hdr.dst_port = 0xFFFF; // 完全匹配端口
-
-    pattern[2].type = RTE_FLOW_ITEM_TYPE_UDP;
-    pattern[2].spec = &udp_spec;
-    pattern[2].mask = &udp_mask;
-
-    pattern[3].type = RTE_FLOW_ITEM_TYPE_END;
-
-    // action: 重定向到指定队列
-    memset(action, 0, sizeof(action));
-    action[0].type = RTE_FLOW_ACTION_TYPE_QUEUE;
-    action[0].conf = &queue;
-    action[1].type = RTE_FLOW_ACTION_TYPE_END;
-
-    flow = rte_flow_create(port_id, &attr, pattern, action, &error);
-    if (!flow)
-    {
-        cfg.logger_->error("❌ Failed to create flow for UDP dport{} -> queue {}: {}\n",
-                           dst_port, queue_id, error.message ? error.message : "(no msg)");
-    }
-    else
-    {
-        cfg.logger_->debug("✅ Flow created: UDP dport {} -> queue {}\n", dst_port, queue_id);
-    }
-
-    return flow;
-}
-
-static struct rte_flow *
-create_catch_all_drop(uint16_t port_id)
-{
-    struct rte_flow_attr attr;
-    struct rte_flow_item pattern[2];
-    struct rte_flow_action action[2];
-    struct rte_flow_error error;
-    struct rte_flow *flow = NULL;
-
-    memset(&attr, 0, sizeof(attr));
-    attr.ingress = 1;
-    attr.priority = 2; // 低优先级，最后匹配
-
-    // 匹配所有
-    memset(pattern, 0, sizeof(pattern));
-    pattern[0].type = RTE_FLOW_ITEM_TYPE_ETH;
-    pattern[1].type = RTE_FLOW_ITEM_TYPE_END;
-
-    // 动作 = 丢弃
-    memset(action, 0, sizeof(action));
-    action[0].type = RTE_FLOW_ACTION_TYPE_DROP;
-    action[1].type = RTE_FLOW_ACTION_TYPE_END;
-
-    flow = rte_flow_create(port_id, &attr, pattern, action, &error);
-    if (!flow)
-    {
-        cfg.logger_->debug("❌ Failed to create catch-all DROP flow: {}\n",
-                           error.message ? error.message : "(no msg)");
-    }
-    else
-    {
-        cfg.logger_->debug("✅ Catch-all DROP flow created (all other packets dropped)\n");
-    }
-
-    return flow;
-}
 
 static int
 port_init(uint16_t port, struct rte_mempool *mbuf_pool, uint16_t nb_rx_queues)
 {
 
-    uint16_t nb_rxd = RX_RING_SIZE;
+    uint16_t nb_rxd = nb_rxd_SIZE;
     int retval;
 
     struct rte_eth_dev_info dev_info;
@@ -165,7 +73,7 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool, uint16_t nb_rx_queues)
     if (retval < 0)
         return retval;
 
-    retval = rte_eth_tx_queue_setup(port, 0, RX_RING_SIZE,
+    retval = rte_eth_tx_queue_setup(port, 0, nb_rxd_SIZE,
                                     rte_eth_dev_socket_id(port), NULL);
     if (retval < 0)
         return retval;
@@ -239,18 +147,6 @@ lcore_recv(void *arg)
 }
 
 #define SPECTRUM_HEADER_SIZE (sizeof(spectrum_header))
-
-typedef struct
-{
-    uint16_t total_pkt;     // 总包数
-    uint16_t received_pkt;  // 已收到的包数
-    uint8_t **packet_array; // 存放每个包指针
-    uint32_t *packet_len;   // 每个包长度
-    uint64_t timestamp_ns;
-    uint16_t subband_id; // 子频段编号
-    uint16_t window_id;  // window id
-    time_t last_update;  // 超时回收
-} spectrum_frame_t;
 
 struct SpectrumFrame
 {
@@ -448,7 +344,7 @@ std::vector<lcore_param> generate_lcore_params(const std::vector<uint16_t> &port
         {
             unsigned assigned_lcore = RTE_MAX_LCORE;
             uint16_t port_socket = rte_eth_dev_socket_id(port);
-
+            
             // 优先在同 NUMA 节点分配
             for (unsigned lc = next_lcore[port_socket]; lc < RTE_MAX_LCORE; ++lc)
             {
@@ -551,7 +447,7 @@ find_continuum_frame(uint64_t timestamp_ns)
 static int
 recv2mem(void *args)
 {
-
+    
     struct lcore_param *param = (struct lcore_param *)args;
     int stream_id = param->queue_id;
     rte_ring *ring = rx_rings[stream_id];
