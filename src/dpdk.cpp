@@ -24,8 +24,10 @@
 #include "readerwriterqueue.h"
 #include "readerwritercircularbuffer.h"
 #include <unordered_map>
+#include <unordered_set>
 #include <ctime>
 #include "sdfits.h"
+#include "ContinuumFits.h"
 // #include "sdfits_writer.h"
 #define RX_RING_SIZE 8192
 #define NUM_MBUFS 262144
@@ -34,11 +36,13 @@
 #define RING_SIZE 8192
 #define SPECTRUM_MAGIC 0x534C5231
 #define SPECTRUM_VERSION 1
-// #define recv_streams 4
+
 auto &cfg = GlobalConfig::getInstance();
 constexpr size_t EXPECTED_PKT_LEN = 8266;
 // const uint16_t port_list[] = {60000, 60001, 60002, 60003, 60004, 60005, 60006, 60007};
 std::vector<rte_ring *> rx_rings;
+rte_ring *continuum_ring = nullptr;
+ContinuumFits m_continuum_fits;
 struct lcore_param
 {
     uint16_t port_id;
@@ -166,13 +170,6 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool, uint16_t nb_rx_queues)
     if (retval < 0)
         return retval;
 
-    // retval = rte_eth_dev_configure(port, nb_rx_queues, 0, &port_conf);
-    // if (retval < 0)
-    //     return retval;
-
-    struct rte_eth_rxconf rxconf;
-    rxconf = dev_info.default_rxconf;
-    rxconf.rx_free_thresh = 1024;
     for (uint16_t q = 0; q < nb_rx_queues; q++)
     {
 
@@ -185,15 +182,7 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool, uint16_t nb_rx_queues)
     retval = rte_eth_dev_start(port);
     if (retval < 0)
         return retval;
-    // for (int i = 0; i < nb_rx_queues; i++)
-    // {
-    //     create_udp_dst_flow(port, 60000 + i, i);
-    // }
-    // catch-all
-    // create_catch_all_flow(port,i+1);
-    // create_catch_all_drop(port);
-    // printf("🚀 Port %d ready, listening on UDP 60000-60003\n", port);
-
+    
     // disable promisc
     rte_eth_promiscuous_disable(port);
     rte_eth_allmulticast_disable(port);
@@ -213,11 +202,7 @@ lcore_recv(void *arg)
     uint64_t t_num = 0;
     auto &cfg = GlobalConfig::getInstance();
     size_t pool_idx = 0;
-    // int static_dstport = port_list[queue_id];
-    // uint64_t global_packet_id = 0;
-    // int presecond = -1;
-    // int batch_idx = 0;
-    // int pkt_idx_inbatch = 0;
+
     cfg.logger_->debug("Running locre_recv thread on port {} ,queue {} ,on core {}", port, queue_id, lcore_id);
     // auto fd = open("/data/dpdk_capture.bin", O_CREAT | O_WRONLY | O_TRUNC, 0644);
     while (1)
@@ -278,20 +263,15 @@ struct SpectrumFrame
 
 struct FrameKey
 {
-    uint64_t ts;                 // 时间戳
-    uint32_t subband_start_freq; // 子带起始频率
-    uint32_t subband_end_freq;   // 子带结束频率
-    uint16_t sub;                // 子带 ID
-    uint16_t win;                // 窗口 ID
+    uint64_t timestamp_ns;
+    uint16_t subband_id;
+    uint16_t window_id;
 
-    // Equality operator
     bool operator==(const FrameKey &o) const noexcept
     {
-        return ts == o.ts &&
-               subband_start_freq == o.subband_start_freq &&
-               subband_end_freq == o.subband_end_freq &&
-               sub == o.sub &&
-               win == o.win;
+        return timestamp_ns == o.timestamp_ns &&
+               subband_id == o.subband_id &&
+               window_id == o.window_id;
     }
 };
 
@@ -299,38 +279,27 @@ struct FrameKeyHash
 {
     size_t operator()(const FrameKey &k) const noexcept
     {
-        size_t h1 = std::hash<uint64_t>()(k.ts);
-        size_t h2 = std::hash<uint32_t>()(k.subband_start_freq);
-        size_t h3 = std::hash<uint32_t>()(k.subband_end_freq);
-        size_t h4 = std::hash<uint16_t>()(k.sub);
-        size_t h5 = std::hash<uint16_t>()(k.win);
-
-        // 简单位移+异或组合
-        return h1 ^ (h2 << 1) ^ (h3 << 2) ^ (h4 << 3) ^ (h5 << 4);
+        size_t h = std::hash<uint64_t>{}(k.timestamp_ns);
+        h ^= std::hash<uint16_t>{}(k.subband_id) + 0x9e3779b9 +
+             (h << 6) + (h >> 2);
+        h ^= std::hash<uint16_t>{}(k.window_id) + 0x9e3779b9 +
+             (h << 6) + (h >> 2);
+        return h;
     }
 };
 
 std::unordered_map<FrameKey, SpectrumFrame *, FrameKeyHash> frame_map;
 struct BandKey
 {
-    double f_start; // 起始频率（Hz）
-    double f_stop;  // 截止频率（Hz）
+    float f_start; // 起始频率（Hz）
+    float f_stop;  // 截止频率（Hz）
 
     bool operator==(const BandKey &o) const noexcept
     {
         return f_start == o.f_start && f_stop == o.f_stop;
     }
 };
-std::string getTimeString()
-{
-    auto now = std::chrono::system_clock::now();
-    std::time_t t = std::chrono::system_clock::to_time_t(now);
-    std::tm localTime{};
-    localtime_r(&t, &localTime);
-    std::ostringstream oss;
-    oss << std::put_time(&localTime, "%Y-%m-%d_%H-%M-%S");
-    return oss.str();
-}
+
 struct BandKeyHash
 {
     size_t operator()(const BandKey &k) const noexcept
@@ -355,10 +324,11 @@ void get_date_obs(uint64_t timestamp_ns, char date_obs[16])
              utc_tm.tm_year % 100);
 }
 std::unordered_map<BandKey, sdfits *, BandKeyHash> writers;
+
 // 核心函数：接收 UDP 包 + 多包重组 + 合并 + 写文件
 void receive_packet(const spectrum_header &pkthdr, const float *payload, size_t payload_len_bytes)
 {
-    FrameKey key{pkthdr.timestamp_ns, pkthdr.subband_start_freq, pkthdr.subband_end_freq, pkthdr.window_id};
+    FrameKey key{pkthdr.timestamp_ns,pkthdr.subband_id, pkthdr.window_id};
     SpectrumFrame *frame;
 
     auto it = frame_map.find(key);
@@ -378,39 +348,29 @@ void receive_packet(const spectrum_header &pkthdr, const float *payload, size_t 
     // 完整帧处理
     if (frame->received_pkt == frame->total_pkt)
     {
-
         std::vector<float> full;
         full.reserve(frame->n_channels);
         for (auto &pkt : frame->packets)
             full.insert(full.end(), pkt.begin(), pkt.end());
 
-        double f_start = pkthdr.start_freq_hz;
-        double f_stop = f_start + pkthdr.channel_bw_hz * pkthdr.n_channels;
+        float f_start = pkthdr.start_freq_hz;
+        float f_stop = f_start + pkthdr.channel_bw_hz * pkthdr.n_channels;
 
-        BandKey filekey{pkthdr.start_freq_hz, pkthdr.channel_bw_hz};
+        BandKey filekey{f_start,f_stop};
         // SDFITSWriter *writer = nullptr;
         sdfits *writer = nullptr;
         // // 查找是否已经存在文件
         auto it = writers.find(filekey);
         if (it == writers.end())
         {
-            // 生成文件名：f_start_f_stopMHz.fits
-            // char fname[128];
-            // sprintf(fname, "%.2f_%.2fMHz_%d.fits", f_start / 1e6, f_stop / 1e6,pkthdr.n_channels);
-
-            // 创建新的写入器
-            // writer = new SDFITSWriter(fname,pkthdr);
             writer = new sdfits();
             writer->new_file = 1;
-            // writer->basefilename = fname;
-            // strncpy(writer->basefilename,cfg.folder.c_str(),cfg.folder.length());
+
             std::string source_on="OFF";
             if(cfg.source_on)
                 source_on = "ON";
-            sprintf(writer->basefilename, "%s/%s_%s_%s/%.2f_%.2fMHz_%d.sdfits",
+            sprintf(writer->basefilename, "%s/%.2f_%.2fMHz_%d.sdfits",
                 cfg.folder.c_str(),
-                cfg.object.c_str(),source_on.c_str(),
-                getTimeString().c_str(),
                 f_start / 1e6, f_stop / 1e6, pkthdr.n_channels);
             writers[filekey] = writer;
             writer->hdr.nchan = pkthdr.n_channels;
@@ -439,56 +399,7 @@ void receive_packet(const spectrum_header &pkthdr, const float *payload, size_t 
     }
 }
 
-static int
-recv2mem(void *args)
-{
 
-    struct lcore_param *param = (struct lcore_param *)args;
-    int stream_id = param->queue_id;
-    rte_ring *ring = rx_rings[stream_id];
-    rte_mbuf *mbuf;
-
-    while (1)
-    {
-        int ret = rte_ring_dequeue(ring, (void **)&mbuf);
-        if (ret != 0)
-        {
-            continue;
-        }
-        uint8_t *udp_payload = rte_pktmbuf_mtod_offset(mbuf, uint8_t *, 42);
-
-        spectrum_header pkthdr;
-        memcpy(&pkthdr, udp_payload, sizeof(spectrum_header));
-        if(pkthdr.magic != SPECTRUM_MAGIC || pkthdr.version != SPECTRUM_VERSION)
-        {
-            rte_pktmbuf_free(mbuf);
-            continue;
-        }
-        // payload 数据指针
-        float *payload = reinterpret_cast<float *>(udp_payload + sizeof(spectrum_header));
-        int pkt_len = rte_pktmbuf_pkt_len(mbuf);
-        if(pkt_len <= 42 + sizeof(spectrum_header))
-        {
-            rte_pktmbuf_free(mbuf);
-            continue;
-        }
-        size_t payload_len_bytes =
-            pkt_len - 42 - sizeof(spectrum_header);
-        if (pkthdr.pkt_id >= pkthdr.total_pkt)
-        {
-            rte_pktmbuf_free(mbuf);
-            continue;
-        }
-        if(payload_len_bytes % sizeof(float) != 0)
-        {
-            rte_pktmbuf_free(mbuf);
-            continue;
-        }
-        receive_packet(pkthdr, payload, payload_len_bytes);
-
-        rte_pktmbuf_free(mbuf);
-    }
-}
 // 获取指定网卡的端口号
 inline int get_port_by_name(const std::string &name)
 {
@@ -580,6 +491,223 @@ std::vector<lcore_param> generate_lcore_params(const std::vector<uint16_t> &port
 
     return params;
 }
+
+struct ContinuumResult
+{
+    uint64_t timestamp_ns;
+    uint16_t subband_id;
+    float power;
+    float exposure;
+    uint8_t noise_state;
+};
+struct ContinuumFrame
+{
+    // 这个值作为本积分周期的代表时间
+    uint64_t timestamp_ns = 0;
+
+    float power = 0.0;
+    uint32_t received_subbands = 0;
+
+    // 防止同一个子带重复计入
+    std::unordered_set<uint16_t> subbands;
+
+    float exposure = 0.0;
+    uint8_t noise_state = 0;
+};
+
+std::map<uint64_t, ContinuumFrame> continuum_map;
+constexpr uint64_t CONTINUUM_TIME_TOLERANCE_NS = 1000;
+std::map<uint64_t, ContinuumFrame>::iterator
+find_continuum_frame(uint64_t timestamp_ns)
+{
+    auto it = continuum_map.lower_bound(timestamp_ns);
+
+    if (it != continuum_map.end())
+    {
+        uint64_t diff =
+            (it->first >= timestamp_ns)
+                ? (it->first - timestamp_ns)
+                : (timestamp_ns - it->first);
+
+        if (diff <= CONTINUUM_TIME_TOLERANCE_NS)
+            return it;
+    }
+
+    if (it != continuum_map.begin())
+    {
+        auto prev = std::prev(it);
+
+        uint64_t diff =
+            (prev->first >= timestamp_ns)
+                ? (prev->first - timestamp_ns)
+                : (timestamp_ns - prev->first);
+
+        if (diff <= CONTINUUM_TIME_TOLERANCE_NS)
+            return prev;
+    }
+
+    return continuum_map.end();
+}
+static int
+recv2mem(void *args)
+{
+
+    struct lcore_param *param = (struct lcore_param *)args;
+    int stream_id = param->queue_id;
+    rte_ring *ring = rx_rings[stream_id];
+    rte_mbuf *mbuf;
+
+    while (1)
+    {
+        int ret = rte_ring_dequeue(ring, (void **)&mbuf);
+        if (ret != 0)
+        {
+            continue;
+        }
+        uint8_t *udp_payload = rte_pktmbuf_mtod_offset(mbuf, uint8_t *, 42);
+
+        spectrum_header pkthdr;
+        memcpy(&pkthdr, udp_payload, sizeof(spectrum_header));
+        if(pkthdr.magic != SPECTRUM_MAGIC || pkthdr.version != SPECTRUM_VERSION)
+        {
+            rte_pktmbuf_free(mbuf);
+            continue;
+        }
+        // payload 数据指针
+        float *payload = reinterpret_cast<float *>(udp_payload + sizeof(spectrum_header));
+        uint32_t  pkt_len = rte_pktmbuf_pkt_len(mbuf);
+        if(pkt_len <= 42 + sizeof(spectrum_header))
+        {
+            rte_pktmbuf_free(mbuf);
+            continue;
+        }
+        size_t payload_len_bytes =
+            pkt_len - 42 - sizeof(spectrum_header);
+        if (cfg.observation_mode == ObservationMode::CONTINUUM)
+        {
+            if (payload_len_bytes < sizeof(float))
+            {
+                rte_pktmbuf_free(mbuf);
+                continue;
+            }
+            float subband_power;
+            memcpy(
+                &subband_power,
+                udp_payload + sizeof(spectrum_header),
+                sizeof(float));
+            auto *result = new ContinuumResult{
+                pkthdr.timestamp_ns,
+                pkthdr.subband_id,
+                subband_power,
+                pkthdr.exposure,
+                pkthdr.noise_state
+            };
+            if (rte_ring_enqueue(continuum_ring, result) != 0)
+                delete result;
+            rte_pktmbuf_free(mbuf);
+            continue;
+        }
+        else{
+            receive_packet(pkthdr, payload, payload_len_bytes);
+            rte_pktmbuf_free(mbuf);
+        }
+    }
+}
+void accumulate_continuum(const ContinuumResult &r)
+{
+    auto it = find_continuum_frame(r.timestamp_ns);
+
+    // 没有找到时间上匹配的积分周期
+    if (it == continuum_map.end())
+    {
+        ContinuumFrame frame;
+        frame.timestamp_ns = r.timestamp_ns;
+        frame.power = r.power;
+        frame.received_subbands = 1;
+        frame.subbands.insert(r.subband_id);
+        frame.exposure = r.exposure;
+        frame.noise_state = r.noise_state;
+
+        continuum_map.emplace(r.timestamp_ns, std::move(frame));
+
+        return;
+    }
+
+    ContinuumFrame &frame = it->second;
+
+    // 防止同一个 subband 重复进入
+    if (!frame.subbands.insert(r.subband_id).second)
+    {
+        cfg.logger_->warn(
+            "Duplicate continuum result: "
+            "frame_ts={}, result_ts={}, diff={} ns, subband={}",
+            frame.timestamp_ns,
+            r.timestamp_ns,
+            static_cast<int64_t>(r.timestamp_ns) -
+                static_cast<int64_t>(frame.timestamp_ns),
+            r.subband_id);
+
+        return;
+    }
+
+    // 时间匹配，但 timestamp 可以不同
+    frame.power += r.power;
+    ++frame.received_subbands;
+
+    // 所有子带都已经收到
+    if (frame.received_subbands == cfg.recv_streams)
+    {
+        const float total_power = frame.power;
+        if(cfg.Debug_mode)
+        {
+            std::cout << "Continuum frame complete: "
+                      << "timestamp_ns=" << frame.timestamp_ns
+                      << ", total_power=" << total_power
+                      << ", exposure=" << frame.exposure
+                      << ", noise_state=" << static_cast<int>(frame.noise_state)
+                      << std::endl;
+        }
+
+        m_continuum_fits.write(
+            frame.timestamp_ns,
+            total_power,
+            frame.exposure,
+            frame.noise_state);
+        
+        continuum_map.erase(it);
+    }
+}
+static int continuum_worker(void *)
+{
+    ContinuumResult *result = nullptr;
+    cfg.logger_->info("Continuum worker started on lcore {}", rte_lcore_id());
+    const std::string filename =
+        cfg.folder + "/continuum.fits";
+
+    // worker 启动时只创建一次
+    if (!m_continuum_fits.create(filename, 0))
+    {
+        cfg.logger_->error(
+            "Failed to create continuum FITS: {}",
+            filename);
+
+        return -1;
+    }
+    while (1)
+    {
+        if (rte_ring_dequeue(
+                continuum_ring,
+                reinterpret_cast<void **>(&result)) != 0)
+        {
+            continue;
+        }
+        accumulate_continuum(*result);
+
+        delete result;
+    }
+
+    return 0;
+}
 int dpdk()
 {
     char *argv[] = {
@@ -602,7 +730,6 @@ int dpdk()
         rte_exit(EXIT_FAILURE, "Cannot create mbuf pool\n");
     // init rings one subband to one ring
     auto &cfg = GlobalConfig::getInstance();
-    // rx_rings.resize(cfg.recv_streams, nullptr);
     rx_rings.resize(cfg.recv_streams, nullptr);
     for (int i = 0; i < cfg.recv_streams; i++)
     {
@@ -614,6 +741,19 @@ int dpdk()
             rte_exit(EXIT_FAILURE, "Failed to create ring %s: %s\n", ring_name, rte_strerror(rte_errno));
         }
     }
+    continuum_ring = rte_ring_create(
+    "continuum_ring",
+    RING_SIZE,
+    SOCKET_ID_ANY,
+    0);
+
+    if (!continuum_ring)
+    {
+        rte_exit(
+            EXIT_FAILURE,
+            "Failed to create continuum ring: %s\n",
+            rte_strerror(rte_errno));
+    }
     // uint16_t queues_per_port = 8;
     // uint16_t start_dest_port = 60000;
 
@@ -624,21 +764,41 @@ int dpdk()
 
     // init port config
     auto lcore_params = generate_lcore_params(ports, cfg.recv_streams);
-    int lastcore_id;
+    unsigned lastcore_id;
     for (int i = 0; i < lcore_params.size(); ++i)
     {
         rte_eal_remote_launch(lcore_recv, &lcore_params[i], lcore_params[i].lcore_id);
-        lastcore_id = lcore_params[i].lcore_id + 1;
     }
+    lastcore_id = lcore_params[lcore_params.size() - 1].lcore_id + 1;
     for (int i = 0; i < lcore_params.size(); ++i)
     {
         struct lcore_param *recv_param = new lcore_param;
         recv_param->lcore_id = lastcore_id + i;
         recv_param->queue_id = i;
-
         rte_eal_remote_launch(recv2mem, (void *)recv_param, recv_param->lcore_id);
     }
+    lastcore_id = lastcore_id + lcore_params.size();
+    unsigned continuum_lcore = lastcore_id+1;
+    if (cfg.observation_mode == ObservationMode::CONTINUUM)
+    {
+        int ret = rte_eal_remote_launch(
+            continuum_worker,
+            nullptr,
+            continuum_lcore);
 
+        cfg.logger_->info(
+            "continuum_worker remote_launch ret={}, lcore={}",
+            ret,
+            continuum_lcore);
+
+        if (ret != 0)
+        {
+            cfg.logger_->error(
+                "Failed to launch continuum_worker on lcore {}, ret={}",
+                continuum_lcore,
+                ret);
+        }
+    }
     rte_eal_mp_wait_lcore();
     return 0;
 }

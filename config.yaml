@@ -5,6 +5,6 @@ object: test
 # on/off true/false
 source_on: true
 # source_on: false
-recv_streams: 16 
+recv_streams: 8 
 Storage_folder: /data/
-observation_mode: 1      # 观测模式 0: baseband 1:spcetrum 2: Continuum spectrum
+observation_mode: 2      # 观测模式 0: baseband 1:spcetrum 2: Continuum spectrum
