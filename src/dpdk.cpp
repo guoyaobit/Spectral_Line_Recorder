@@ -35,7 +35,7 @@
 #define BURST_SIZE 128
 #define RING_SIZE 8192
 #define SPECTRUM_MAGIC 0x534C5231
-#define SPECTRUM_VERSION 1
+#define SPECTRUM_VERSION 2
 
 auto &cfg = GlobalConfig::getInstance();
 constexpr size_t EXPECTED_PKT_LEN = 8266;
@@ -162,12 +162,14 @@ struct FrameKey
     uint64_t timestamp_ns;
     uint16_t subband_id;
     uint16_t window_id;
+    uint8_t beam_id;
 
     bool operator==(const FrameKey &o) const noexcept
     {
         return timestamp_ns == o.timestamp_ns &&
                subband_id == o.subband_id &&
-               window_id == o.window_id;
+               window_id == o.window_id &&
+               beam_id == o.beam_id;
     }
 };
 
@@ -180,6 +182,8 @@ struct FrameKeyHash
              (h << 6) + (h >> 2);
         h ^= std::hash<uint16_t>{}(k.window_id) + 0x9e3779b9 +
              (h << 6) + (h >> 2);
+        h ^= std::hash<uint8_t>{}(k.beam_id) + 0x9e3779b9 +
+             (h << 6) + (h >> 2);
         return h;
     }
 };
@@ -189,10 +193,12 @@ struct BandKey
 {
     float f_start; // 起始频率（Hz）
     float f_stop;  // 截止频率（Hz）
+    uint8_t beam_id;
 
     bool operator==(const BandKey &o) const noexcept
     {
-        return f_start == o.f_start && f_stop == o.f_stop;
+        return f_start == o.f_start && f_stop == o.f_stop &&
+               beam_id == o.beam_id;
     }
 };
 
@@ -202,7 +208,8 @@ struct BandKeyHash
     {
         auto h1 = std::hash<long long>()(static_cast<long long>(k.f_start));
         auto h2 = std::hash<long long>()(static_cast<long long>(k.f_stop));
-        return h1 ^ (h2 << 1);
+        auto h3 = std::hash<uint8_t>()(k.beam_id);
+        return h1 ^ (h2 << 1) ^ (h3 << 2);
     }
 };
 void get_date_obs(uint64_t timestamp_ns, char date_obs[16])
@@ -224,7 +231,8 @@ std::unordered_map<BandKey, sdfits *, BandKeyHash> writers;
 // 核心函数：接收 UDP 包 + 多包重组 + 合并 + 写文件
 void receive_packet(const spectrum_header &pkthdr, const float *payload, size_t payload_len_bytes)
 {
-    FrameKey key{pkthdr.timestamp_ns,pkthdr.subband_id, pkthdr.window_id};
+    FrameKey key{pkthdr.timestamp_ns, pkthdr.subband_id,
+                 pkthdr.window_id, pkthdr.beam_id};
     SpectrumFrame *frame;
 
     auto it = frame_map.find(key);
@@ -252,7 +260,7 @@ void receive_packet(const spectrum_header &pkthdr, const float *payload, size_t 
         float f_start = pkthdr.start_freq_hz;
         float f_stop = f_start + pkthdr.channel_bw_hz * pkthdr.n_channels;
 
-        BandKey filekey{f_start,f_stop};
+        BandKey filekey{f_start, f_stop, pkthdr.beam_id};
         // SDFITSWriter *writer = nullptr;
         sdfits *writer = nullptr;
         // // 查找是否已经存在文件
@@ -265,9 +273,12 @@ void receive_packet(const spectrum_header &pkthdr, const float *payload, size_t 
             std::string source_on="OFF";
             if(cfg.source_on)
                 source_on = "ON";
-            sprintf(writer->basefilename, "%s/%.2f_%.2fMHz_%d.sdfits",
+            const char beam_name = pkthdr.beam_id == 0 ? 'A' : 'B';
+            snprintf(writer->basefilename, sizeof(writer->basefilename),
+                "%s/%.2f_%.2fMHz_beam%c_%d",
                 cfg.folder.c_str(),
-                f_start / 1e6, f_stop / 1e6, pkthdr.n_channels);
+                f_start / 1e6, f_stop / 1e6, beam_name,
+                pkthdr.n_channels);
             writers[filekey] = writer;
             writer->hdr.nchan = pkthdr.n_channels;
             get_date_obs(pkthdr.timestamp_ns-
@@ -464,7 +475,9 @@ recv2mem(void *args)
 
         spectrum_header pkthdr;
         memcpy(&pkthdr, udp_payload, sizeof(spectrum_header));
-        if(pkthdr.magic != SPECTRUM_MAGIC || pkthdr.version != SPECTRUM_VERSION)
+        if(pkthdr.magic != SPECTRUM_MAGIC ||
+           pkthdr.version != SPECTRUM_VERSION ||
+           pkthdr.beam_id > 1)
         {
             rte_pktmbuf_free(mbuf);
             continue;

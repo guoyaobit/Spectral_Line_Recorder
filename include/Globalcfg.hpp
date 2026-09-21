@@ -15,10 +15,11 @@
 #include <iomanip>
 #include <sys/stat.h> 
 #include <filesystem>
+#include <cstddef>
 #pragma pack(push, 1)
 typedef struct {
   uint32_t magic ;//= 0x534C5231; // "SLR1"
-  uint16_t version = 1;
+  uint16_t version = 2;
   // UTC integration center time
   // Unix epoch nanoseconds
   uint64_t timestamp_ns;
@@ -42,7 +43,8 @@ typedef struct {
   // calibration
   uint8_t noise_state; // OFF=0 ON=1 MIX=2
   uint8_t cal_mode;    // optional
-  uint16_t reserved2;
+  uint8_t beam_id = 0; // 0=A, 1=B
+  uint8_t reserved2 = 0;
 
   // telescope direction
   double ra;  // rad
@@ -51,6 +53,11 @@ typedef struct {
   uint32_t flags; // overflow/dropout/etc
 } spectrum_header;
 #pragma pack(pop)
+
+static_assert(sizeof(spectrum_header) == 95,
+              "spectrum_header protocol size must remain 95 bytes");
+static_assert(offsetof(spectrum_header, beam_id) == 73,
+              "spectrum_header beam_id offset must remain stable");
 enum class ObservationMode : uint8_t {
   BASEBAND = 0, // 基带记录模式 (Raw Baseband Recording)
   SPECTRAL = 1, // 谱线观测模式 (Spectral Line Observation)
