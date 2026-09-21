@@ -36,7 +36,25 @@ int sdfits::sdfits_create()
     filenum++;
     rownum = 1;
 
-    sprintf(filename, "%s_%04d.sdfits", basefilename, filenum);
+    // basefilename is a stem. Be tolerant of older callers that included the
+    // extension so the generated name never contains ".sdfits_0001.sdfits".
+    std::string filename_stem(basefilename);
+    const std::string extension = ".sdfits";
+    if (filename_stem.size() >= extension.size() &&
+        filename_stem.compare(filename_stem.size() - extension.size(),
+                              extension.size(), extension) == 0)
+    {
+        filename_stem.erase(filename_stem.size() - extension.size());
+    }
+
+    int filename_length = snprintf(filename, sizeof(filename), "%s_%04d.sdfits",
+                                   filename_stem.c_str(), filenum);
+    if (filename_length < 0 ||
+        static_cast<size_t>(filename_length) >= sizeof(filename))
+    {
+        fprintf(stderr, "SDFITS output filename is too long.\n");
+        return 1;
+    }
 
     // Create basic FITS file from our template
     // char *vegas_dir = getenv("VEGAS_DIR");
