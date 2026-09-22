@@ -124,6 +124,7 @@ public:
     }
     // default para
     int recv_streams = 8;
+    int continuum_inputs = 64;
     std::string folder = "";
     std::string object = "";
     bool source_on = true;
@@ -151,6 +152,15 @@ public:
                 observation_mode = parseObservationMode(config["observation_mode"]);
             if (config["recv_streams"])
                 recv_streams = config["recv_streams"].as<int>();
+            if (config["continuum_inputs"])
+                continuum_inputs = config["continuum_inputs"].as<int>();
+            if (continuum_inputs <= 0 || continuum_inputs > 64)
+            {
+                logger_->error(
+                    "continuum_inputs must be between 1 and 64, got {}",
+                    continuum_inputs);
+                return false;
+            }
             if (config["Storage_folder"])
                 folder = config["Storage_folder"].as<std::string>();
             if(config["object"])

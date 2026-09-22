@@ -643,7 +643,9 @@ std::vector<lcore_param> generate_lcore_params(const std::vector<uint16_t> &port
 struct ContinuumResult
 {
     uint64_t timestamp_ns;
+    uint32_t integration_id;
     uint16_t subband_id;
+    uint8_t beam_id;
     float power;
     float exposure;
     uint8_t noise_state;
@@ -653,18 +655,23 @@ struct ContinuumFrame
     // 这个值作为本积分周期的代表时间
     uint64_t timestamp_ns = 0;
 
-    float power = 0.0;
-    uint32_t received_subbands = 0;
+    double power = 0.0;
+    uint32_t received_inputs = 0;
 
-    // 防止同一个子带重复计入
-    std::unordered_set<uint16_t> subbands;
+    // One scalar is allowed for each physical-subband/beam identity.
+    std::unordered_set<uint32_t> inputs;
 
     float exposure = 0.0;
     uint8_t noise_state = 0;
+    std::chrono::steady_clock::time_point created_at =
+        std::chrono::steady_clock::now();
 };
 
 std::map<uint64_t, ContinuumFrame> continuum_map;
 constexpr uint64_t CONTINUUM_TIME_TOLERANCE_NS = 1000;
+constexpr auto CONTINUUM_FRAME_TIMEOUT = std::chrono::seconds(5);
+std::chrono::steady_clock::time_point last_continuum_cleanup =
+    std::chrono::steady_clock::now();
 std::map<uint64_t, ContinuumFrame>::iterator
 find_continuum_frame(uint64_t timestamp_ns)
 {
@@ -822,8 +829,14 @@ recv2mem(void *args)
             udp_len - sizeof(rte_udp_hdr) - sizeof(spectrum_header);
         if (cfg.observation_mode == ObservationMode::CONTINUUM)
         {
-            if (payload_len_bytes < sizeof(float))
+            if (pkthdr.total_pkt != 1 || pkthdr.pkt_id != 0 ||
+                pkthdr.window_id != 0 || payload_len_bytes != sizeof(float))
             {
+                cfg.logger_->warn(
+                    "Dropped invalid continuum result: subband={}, beam={}, "
+                    "window={}, packet={}/{}, payload_bytes={}",
+                    pkthdr.subband_id, pkthdr.beam_id, pkthdr.window_id,
+                    pkthdr.pkt_id, pkthdr.total_pkt, payload_len_bytes);
                 rte_pktmbuf_free(mbuf);
                 continue;
             }
@@ -834,13 +847,25 @@ recv2mem(void *args)
                 sizeof(float));
             auto *result = new ContinuumResult{
                 pkthdr.timestamp_ns,
+                pkthdr.integration_id,
                 pkthdr.subband_id,
+                pkthdr.beam_id,
                 subband_power,
                 pkthdr.exposure,
                 pkthdr.noise_state
             };
             if (rte_ring_enqueue(continuum_ring, result) != 0)
+            {
+                static std::atomic<uint64_t> continuum_ring_drop_count{0};
+                const uint64_t count =
+                    continuum_ring_drop_count.fetch_add(1) + 1;
+                if (count == 1 || count % 1000 == 0)
+                    cfg.logger_->warn(
+                        "Dropped continuum results because the aggregation "
+                        "ring is full; count={}",
+                        count);
                 delete result;
+            }
             rte_pktmbuf_free(mbuf);
             continue;
         }
@@ -852,6 +877,8 @@ recv2mem(void *args)
 }
 void accumulate_continuum(const ContinuumResult &r)
 {
+    const uint32_t input_id =
+        (static_cast<uint32_t>(r.subband_id) << 1) | r.beam_id;
     auto it = find_continuum_frame(r.timestamp_ns);
 
     // 没有找到时间上匹配的积分周期
@@ -859,65 +886,108 @@ void accumulate_continuum(const ContinuumResult &r)
     {
         ContinuumFrame frame;
         frame.timestamp_ns = r.timestamp_ns;
-        frame.power = r.power;
-        frame.received_subbands = 1;
-        frame.subbands.insert(r.subband_id);
         frame.exposure = r.exposure;
         frame.noise_state = r.noise_state;
-
-        continuum_map.emplace(r.timestamp_ns, std::move(frame));
-
-        return;
+        it = continuum_map.emplace(r.timestamp_ns, std::move(frame)).first;
     }
 
     ContinuumFrame &frame = it->second;
 
-    // 防止同一个 subband 重复进入
-    if (!frame.subbands.insert(r.subband_id).second)
+    // Reject a second scalar from the same physical subband and beam.
+    if (!frame.inputs.insert(input_id).second)
     {
         cfg.logger_->warn(
             "Duplicate continuum result: "
-            "frame_ts={}, result_ts={}, diff={} ns, subband={}",
+            "frame_ts={}, result_ts={}, diff={} ns, subband={}, beam={}, "
+            "integration={}",
             frame.timestamp_ns,
             r.timestamp_ns,
             static_cast<int64_t>(r.timestamp_ns) -
                 static_cast<int64_t>(frame.timestamp_ns),
-            r.subband_id);
+            r.subband_id, r.beam_id, r.integration_id);
 
         return;
     }
 
+    if (frame.received_inputs != 0 &&
+        (std::abs(frame.exposure - r.exposure) > 1.0e-6f ||
+         frame.noise_state != r.noise_state))
+    {
+        cfg.logger_->warn(
+            "Continuum metadata mismatch: frame_ts={}, subband={}, beam={}, "
+            "exposure={}/{}, noise_state={}/{}",
+            frame.timestamp_ns, r.subband_id, r.beam_id, frame.exposure,
+            r.exposure, frame.noise_state, r.noise_state);
+    }
+
     // 时间匹配，但 timestamp 可以不同
     frame.power += r.power;
-    ++frame.received_subbands;
+    ++frame.received_inputs;
 
-    // 所有子带都已经收到
-    if (frame.received_subbands == cfg.recv_streams)
+    // Write exactly one row after every configured subband/beam scalar has
+    // arrived for this integration period.
+    if (frame.received_inputs ==
+        static_cast<uint32_t>(cfg.continuum_inputs))
     {
-        const float total_power = frame.power;
+        const double total_power = frame.power;
         if(cfg.Debug_mode)
         {
             std::cout << "Continuum frame complete: "
                       << "timestamp_ns=" << frame.timestamp_ns
+                      << ", inputs=" << frame.received_inputs
                       << ", total_power=" << total_power
                       << ", exposure=" << frame.exposure
                       << ", noise_state=" << static_cast<int>(frame.noise_state)
                       << std::endl;
         }
 
-        m_continuum_fits.write(
-            frame.timestamp_ns,
-            total_power,
-            frame.exposure,
-            frame.noise_state);
+        if (!m_continuum_fits.write(
+                frame.timestamp_ns,
+                total_power,
+                frame.exposure,
+                frame.noise_state))
+        {
+            cfg.logger_->error(
+                "Failed to write complete continuum integration: "
+                "timestamp={}, inputs={}",
+                frame.timestamp_ns, frame.received_inputs);
+        }
         
         continuum_map.erase(it);
     }
 }
+
+void discard_expired_continuum_frames()
+{
+    const auto now = std::chrono::steady_clock::now();
+    if (now - last_continuum_cleanup < std::chrono::seconds(1))
+        return;
+
+    for (auto it = continuum_map.begin(); it != continuum_map.end();)
+    {
+        if (now - it->second.created_at >= CONTINUUM_FRAME_TIMEOUT)
+        {
+            cfg.logger_->warn(
+                "Discarded incomplete continuum integration: timestamp={}, "
+                "received={}/{}, total_power={}",
+                it->second.timestamp_ns, it->second.received_inputs,
+                cfg.continuum_inputs, it->second.power);
+            it = continuum_map.erase(it);
+        }
+        else
+        {
+            ++it;
+        }
+    }
+    last_continuum_cleanup = now;
+}
 static int continuum_worker(void *)
 {
     ContinuumResult *result = nullptr;
-    cfg.logger_->info("Continuum worker started on lcore {}", rte_lcore_id());
+    cfg.logger_->info(
+        "Continuum worker started on lcore {}; expecting {} "
+        "subband/beam scalar(s) per integration",
+        rte_lcore_id(), cfg.continuum_inputs);
     const std::string filename =
         cfg.folder + "/continuum.fits";
 
@@ -936,9 +1006,11 @@ static int continuum_worker(void *)
                 continuum_ring,
                 reinterpret_cast<void **>(&result)) != 0)
         {
+            discard_expired_continuum_frames();
             continue;
         }
         accumulate_continuum(*result);
+        discard_expired_continuum_frames();
 
         delete result;
     }

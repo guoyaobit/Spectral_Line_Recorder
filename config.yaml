@@ -6,5 +6,9 @@ object: test
 source_on: true
 # source_on: false
 recv_streams: 8 
+# Number of scalar continuum results expected per integration.
+# 8 servers x 4 physical subbands x 2 beams = 64.
+# Use 16 when only two servers are enabled.
+continuum_inputs: 64
 Storage_folder: /data/
 observation_mode: 1      # Must match the sender: 1=spectral line, 2=continuum
