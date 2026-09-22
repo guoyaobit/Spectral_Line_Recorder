@@ -25,6 +25,9 @@
 #include "readerwritercircularbuffer.h"
 #include <unordered_map>
 #include <unordered_set>
+#include <atomic>
+#include <functional>
+#include <mutex>
 #include <ctime>
 #include "sdfits.h"
 #include "ContinuumFits.h"
@@ -35,7 +38,8 @@
 #define BURST_SIZE 128
 #define RING_SIZE 8192
 #define SPECTRUM_MAGIC 0x534C5231
-#define SPECTRUM_VERSION 2
+#define SPECTRUM_VERSION_V1 1
+#define SPECTRUM_VERSION_V2 2
 
 auto &cfg = GlobalConfig::getInstance();
 constexpr size_t EXPECTED_PKT_LEN = 8266;
@@ -191,14 +195,23 @@ struct FrameKeyHash
 std::unordered_map<FrameKey, SpectrumFrame *, FrameKeyHash> frame_map;
 struct BandKey
 {
-    float f_start; // 起始频率（Hz）
-    float f_stop;  // 截止频率（Hz）
+    uint16_t subband_id;
+    uint16_t window_id;
     uint8_t beam_id;
+    double f_start; // 起始频率（Hz）
+    double f_stop;  // 截止频率（Hz）
+    double channel_bw_hz;
+    uint32_t n_channels;
 
     bool operator==(const BandKey &o) const noexcept
     {
-        return f_start == o.f_start && f_stop == o.f_stop &&
-               beam_id == o.beam_id;
+        return subband_id == o.subband_id &&
+               window_id == o.window_id &&
+               beam_id == o.beam_id &&
+               f_start == o.f_start &&
+               f_stop == o.f_stop &&
+               channel_bw_hz == o.channel_bw_hz &&
+               n_channels == o.n_channels;
     }
 };
 
@@ -206,10 +219,17 @@ struct BandKeyHash
 {
     size_t operator()(const BandKey &k) const noexcept
     {
-        auto h1 = std::hash<long long>()(static_cast<long long>(k.f_start));
-        auto h2 = std::hash<long long>()(static_cast<long long>(k.f_stop));
-        auto h3 = std::hash<uint8_t>()(k.beam_id);
-        return h1 ^ (h2 << 1) ^ (h3 << 2);
+        size_t h = std::hash<uint16_t>{}(k.subband_id);
+        auto combine = [&h](size_t value) {
+            h ^= value + 0x9e3779b9 + (h << 6) + (h >> 2);
+        };
+        combine(std::hash<uint16_t>{}(k.window_id));
+        combine(std::hash<uint8_t>{}(k.beam_id));
+        combine(std::hash<double>{}(k.f_start));
+        combine(std::hash<double>{}(k.f_stop));
+        combine(std::hash<double>{}(k.channel_bw_hz));
+        combine(std::hash<uint32_t>{}(k.n_channels));
+        return h;
     }
 };
 void get_date_obs(uint64_t timestamp_ns, char date_obs[16])
@@ -227,83 +247,171 @@ void get_date_obs(uint64_t timestamp_ns, char date_obs[16])
              utc_tm.tm_year % 100);
 }
 std::unordered_map<BandKey, sdfits *, BandKeyHash> writers;
+std::mutex frame_map_mutex;
+std::mutex writers_mutex;
 
 // 核心函数：接收 UDP 包 + 多包重组 + 合并 + 写文件
 void receive_packet(const spectrum_header &pkthdr, const float *payload, size_t payload_len_bytes)
 {
+    if (pkthdr.total_pkt == 0 || pkthdr.pkt_id >= pkthdr.total_pkt ||
+        pkthdr.n_channels == 0 || payload_len_bytes % sizeof(float) != 0)
+    {
+        cfg.logger_->warn(
+            "Dropped invalid spectrum fragment: subband={}, window={}, "
+            "packet={}/{}, channels={}, payload_bytes={}",
+            pkthdr.subband_id, pkthdr.window_id, pkthdr.pkt_id,
+            pkthdr.total_pkt, pkthdr.n_channels, payload_len_bytes);
+        return;
+    }
+
     FrameKey key{pkthdr.timestamp_ns, pkthdr.subband_id,
                  pkthdr.window_id, pkthdr.beam_id};
-    SpectrumFrame *frame;
-
-    auto it = frame_map.find(key);
-    if (it == frame_map.end())
+    std::vector<float> full;
     {
-        // not found
-        frame = new SpectrumFrame(pkthdr.total_pkt, pkthdr.n_channels);
-        frame_map[key] = frame;
-    }
-    else
-        frame = it->second;
-
-    // 保存当前包数据
-    frame->packets[pkthdr.pkt_id].assign(payload, payload + payload_len_bytes / sizeof(float));
-    frame->received_pkt++;
-
-    // 完整帧处理
-    if (frame->received_pkt == frame->total_pkt)
-    {
-        std::vector<float> full;
-        full.reserve(frame->n_channels);
-        for (auto &pkt : frame->packets)
-            full.insert(full.end(), pkt.begin(), pkt.end());
-
-        float f_start = pkthdr.start_freq_hz;
-        float f_stop = f_start + pkthdr.channel_bw_hz * pkthdr.n_channels;
-
-        BandKey filekey{f_start, f_stop, pkthdr.beam_id};
-        // SDFITSWriter *writer = nullptr;
-        sdfits *writer = nullptr;
-        // // 查找是否已经存在文件
-        auto it = writers.find(filekey);
-        if (it == writers.end())
+        std::lock_guard<std::mutex> lock(frame_map_mutex);
+        SpectrumFrame *frame;
+        auto it = frame_map.find(key);
+        if (it == frame_map.end())
         {
-            writer = new sdfits();
-            writer->new_file = 1;
-
-            std::string source_on="OFF";
-            if(cfg.source_on)
-                source_on = "ON";
-            const char beam_name = pkthdr.beam_id == 0 ? 'A' : 'B';
-            snprintf(writer->basefilename, sizeof(writer->basefilename),
-                "%s/%.2f_%.2fMHz_beam%c_%d",
-                cfg.folder.c_str(),
-                f_start / 1e6, f_stop / 1e6, beam_name,
-                pkthdr.n_channels);
-            writers[filekey] = writer;
-            writer->hdr.nchan = pkthdr.n_channels;
-            get_date_obs(pkthdr.timestamp_ns-
-                static_cast<uint64_t>(pkthdr.exposure * 0.5 * 1e9), 
-                writer->hdr.date_obs);
-            writer->hdr.chan_bw = pkthdr.channel_bw_hz;
-            writer->hdr.obsfreq = pkthdr.start_freq_hz+pkthdr.channel_bw_hz*pkthdr.n_channels/2;
-            writer->hdr.nsubband = 1;
-            writer->hdr.npol = 4;
-            writer->sdfits_create();
-            // cfg.logger_->info("create filename {}",writer->filename);
+            frame = new SpectrumFrame(pkthdr.total_pkt, pkthdr.n_channels);
+            frame_map[key] = frame;
         }
         else
         {
-            writer = it->second;
+            frame = it->second;
+            if (frame->total_pkt != pkthdr.total_pkt ||
+                frame->n_channels != pkthdr.n_channels)
+            {
+                cfg.logger_->warn(
+                    "Dropped inconsistent spectrum fragment for subband={}, "
+                    "window={}",
+                    pkthdr.subband_id, pkthdr.window_id);
+                return;
+            }
         }
-        writer->data_columns.data = (unsigned char *)full.data();
-        writer->data_columns.cal_on = pkthdr.noise_state;
-        writer->data_columns.time = 40587 + pkthdr.timestamp_ns/1e9/86400; // 转换为秒
-        writer->data_columns.exposure = pkthdr.exposure;
-        // printf("%d\n",pkthdr.noise_state);
-        writer->sdfits_write_subint();
+
+        auto &packet = frame->packets[pkthdr.pkt_id];
+        if (!packet.empty())
+        {
+            cfg.logger_->warn(
+                "Ignored duplicate spectrum fragment: subband={}, window={}, "
+                "packet={}",
+                pkthdr.subband_id, pkthdr.window_id, pkthdr.pkt_id);
+            return;
+        }
+
+        packet.assign(payload, payload + payload_len_bytes / sizeof(float));
+        frame->received_pkt++;
+        if (frame->received_pkt != frame->total_pkt)
+            return;
+
+        full.reserve(static_cast<size_t>(frame->n_channels) * 4);
+        for (auto &fragment : frame->packets)
+            full.insert(full.end(), fragment.begin(), fragment.end());
+
         delete frame;
         frame_map.erase(key);
     }
+
+    const size_t expected_values = static_cast<size_t>(pkthdr.n_channels) * 4;
+    if (full.size() != expected_values)
+    {
+        cfg.logger_->warn(
+            "Dropped completed spectrum frame with wrong payload size: "
+            "subband={}, window={}, expected_values={}, actual_values={}",
+            pkthdr.subband_id, pkthdr.window_id, expected_values, full.size());
+        return;
+    }
+
+    const double f_start = pkthdr.start_freq_hz;
+    const double f_stop =
+        f_start + pkthdr.channel_bw_hz * pkthdr.n_channels;
+    BandKey filekey{
+        pkthdr.subband_id,
+        pkthdr.window_id,
+        pkthdr.beam_id,
+        f_start,
+        f_stop,
+        pkthdr.channel_bw_hz,
+        pkthdr.n_channels};
+
+    // CFITSIO handles and the writer map are owned under one lock. Different
+    // RSS workers may finish frames concurrently, including identical
+    // frequency ranges sent by different servers.
+    std::lock_guard<std::mutex> writer_lock(writers_mutex);
+    sdfits *writer = nullptr;
+    auto writer_it = writers.find(filekey);
+    if (writer_it == writers.end())
+    {
+        writer = new sdfits();
+        writer->new_file = 1;
+
+        const char beam_name = pkthdr.beam_id == 0 ? 'A' : 'B';
+        const int filename_length = snprintf(
+            writer->basefilename, sizeof(writer->basefilename),
+            "%s/subband%02u_window%u_%.2f_%.2fMHz_beam%c_%u",
+            cfg.folder.c_str(), static_cast<unsigned>(pkthdr.subband_id),
+            static_cast<unsigned>(pkthdr.window_id), f_start / 1e6,
+            f_stop / 1e6, beam_name,
+            static_cast<unsigned>(pkthdr.n_channels));
+        if (filename_length < 0 ||
+            static_cast<size_t>(filename_length) >=
+                sizeof(writer->basefilename))
+        {
+            cfg.logger_->error(
+                "SDFITS base filename is too long for subband {}, window {}",
+                pkthdr.subband_id, pkthdr.window_id);
+            delete writer;
+            return;
+        }
+
+        writer->hdr.nchan = pkthdr.n_channels;
+        get_date_obs(
+            pkthdr.timestamp_ns -
+                static_cast<uint64_t>(pkthdr.exposure * 0.5 * 1e9),
+            writer->hdr.date_obs);
+        writer->hdr.chan_bw = pkthdr.channel_bw_hz;
+        writer->hdr.obsfreq =
+            pkthdr.start_freq_hz +
+            pkthdr.channel_bw_hz * pkthdr.n_channels / 2;
+        writer->hdr.nsubband = 1;
+        writer->hdr.npol = 4;
+        const int create_status = writer->sdfits_create();
+        if (create_status != 0)
+        {
+            cfg.logger_->error(
+                "Failed to create SDFITS file for subband {}, window {}, "
+                "beam {}, status={}",
+                pkthdr.subband_id, pkthdr.window_id, beam_name,
+                create_status);
+            delete writer;
+            return;
+        }
+        writers[filekey] = writer;
+        cfg.logger_->info(
+            "Created SDFITS output for subband {}, window {}, beam {}: {}",
+            pkthdr.subband_id, pkthdr.window_id, beam_name,
+            writer->filename);
+    }
+    else
+    {
+        writer = writer_it->second;
+    }
+
+    writer->data_columns.data =
+        reinterpret_cast<unsigned char *>(full.data());
+    writer->data_columns.cal_on = pkthdr.noise_state;
+    writer->data_columns.time =
+        40587 + pkthdr.timestamp_ns / 1e9 / 86400;
+    writer->data_columns.exposure = pkthdr.exposure;
+    const int write_status = writer->sdfits_write_subint();
+    if (write_status != 0)
+    {
+        cfg.logger_->error(
+            "Failed to write SDFITS row to {}, status={}",
+            writer->filename, write_status);
+    }
+    writer->data_columns.data = nullptr;
 }
 
 
@@ -475,10 +583,45 @@ recv2mem(void *args)
 
         spectrum_header pkthdr;
         memcpy(&pkthdr, udp_payload, sizeof(spectrum_header));
-        if(pkthdr.magic != SPECTRUM_MAGIC ||
-           pkthdr.version != SPECTRUM_VERSION ||
-           pkthdr.beam_id > 1)
+        const bool supported_version =
+            pkthdr.version == SPECTRUM_VERSION_V1 ||
+            pkthdr.version == SPECTRUM_VERSION_V2;
+        if (pkthdr.magic != SPECTRUM_MAGIC || !supported_version)
         {
+            static std::atomic<uint64_t> invalid_header_count{0};
+            const uint64_t count = invalid_header_count.fetch_add(1) + 1;
+            if (count == 1 || count % 100000 == 0)
+            {
+                cfg.logger_->warn(
+                    "Dropped spectrum packets with invalid header: "
+                    "magic=0x{:08x}, version={}, count={}",
+                    pkthdr.magic, pkthdr.version, count);
+            }
+            rte_pktmbuf_free(mbuf);
+            continue;
+        }
+        if (pkthdr.version == SPECTRUM_VERSION_V1)
+        {
+            static std::atomic_flag warned_legacy_v1 = ATOMIC_FLAG_INIT;
+            if (!warned_legacy_v1.test_and_set())
+            {
+                cfg.logger_->warn(
+                    "Receiving legacy spectrum protocol v1; beam metadata is "
+                    "unavailable, defaulting output to beam A");
+            }
+            pkthdr.beam_id = 0;
+        }
+        else if (pkthdr.beam_id > 1)
+        {
+            static std::atomic<uint64_t> invalid_beam_count{0};
+            const uint64_t count = invalid_beam_count.fetch_add(1) + 1;
+            if (count == 1 || count % 100000 == 0)
+            {
+                cfg.logger_->warn(
+                    "Dropped spectrum protocol v2 packets with invalid "
+                    "beam_id={}, count={}",
+                    pkthdr.beam_id, count);
+            }
             rte_pktmbuf_free(mbuf);
             continue;
         }

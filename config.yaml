@@ -7,4 +7,4 @@ source_on: true
 # source_on: false
 recv_streams: 8 
 Storage_folder: /data/
-observation_mode: 2      # 观测模式 0: baseband 1:spcetrum 2: Continuum spectrum
+observation_mode: 1      # Must match the sender: 1=spectral line, 2=continuum

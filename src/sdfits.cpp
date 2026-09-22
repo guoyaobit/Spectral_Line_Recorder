@@ -78,7 +78,7 @@ int sdfits::sdfits_create()
     {
         fprintf(stderr, "Error creating sdfits file from template.\n");
         fits_report_error(stderr, status);
-        exit(1);
+        return status;
     }
 
     // Go to the primary HDU
