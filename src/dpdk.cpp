@@ -30,6 +30,7 @@
 #include <chrono>
 #include <cmath>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <ctime>
 #include "sdfits.h"
@@ -274,11 +275,24 @@ void get_date_obs(uint64_t timestamp_ns, char date_obs[16])
              utc_tm.tm_mon + 1,
              utc_tm.tm_year % 100);
 }
-std::unordered_map<BandKey, sdfits *, BandKeyHash> writers;
+struct WriterState
+{
+    sdfits writer;
+    std::mutex mutex;
+};
+
+std::unordered_map<BandKey, std::shared_ptr<WriterState>, BandKeyHash> writers;
 std::mutex frame_map_mutex;
-std::mutex writers_mutex;
+std::mutex writers_map_mutex;
+std::mutex cfitsio_mutex;
 std::chrono::steady_clock::time_point last_frame_cleanup =
     std::chrono::steady_clock::now();
+
+bool cfitsio_supports_parallel_io()
+{
+    static const bool supported = fits_is_reentrant() != 0;
+    return supported;
+}
 
 bool same_frame_metadata(const spectrum_header &a,
                          const spectrum_header &b)
@@ -435,86 +449,102 @@ void receive_packet(const spectrum_header &pkthdr, const float *payload, size_t 
         pkthdr.channel_bw_hz,
         pkthdr.n_channels};
 
-    // CFITSIO handles and the writer map are owned under one lock. Different
-    // RSS workers may finish frames concurrently, including identical
-    // frequency ranges sent by different servers.
-    std::lock_guard<std::mutex> writer_lock(writers_mutex);
-    sdfits *writer = nullptr;
-    auto writer_it = writers.find(filekey);
-    if (writer_it == writers.end())
     {
-        writer = new sdfits();
-        writer->new_file = 1;
-
-        const char beam_name = pkthdr.beam_id == 0 ? 'A' : 'B';
-        const int filename_length = snprintf(
-            writer->basefilename, sizeof(writer->basefilename),
-            "%s/subband%02u_window%u_%.2f_%.2fMHz_beam%c_%u",
-            cfg.folder.c_str(), static_cast<unsigned>(pkthdr.subband_id),
-            static_cast<unsigned>(pkthdr.window_id), f_start / 1e6,
-            f_stop / 1e6, beam_name,
-            static_cast<unsigned>(pkthdr.n_channels));
-        if (filename_length < 0 ||
-            static_cast<size_t>(filename_length) >=
-                sizeof(writer->basefilename))
+        std::shared_ptr<WriterState> writer_state;
         {
-            cfg.logger_->error(
-                "SDFITS base filename is too long for subband {}, window {}",
-                pkthdr.subband_id, pkthdr.window_id);
-            delete writer;
-            return;
+            // Protect only the writer table and one-time file creation. Once
+            // a writer is published, unrelated bands must not block each
+            // other while CFITSIO writes and flushes their files.
+            std::lock_guard<std::mutex> map_lock(writers_map_mutex);
+            auto writer_it = writers.find(filekey);
+            if (writer_it == writers.end())
+            {
+                writer_state = std::make_shared<WriterState>();
+                sdfits &writer = writer_state->writer;
+                writer.new_file = 1;
+
+                const char beam_name = pkthdr.beam_id == 0 ? 'A' : 'B';
+                const int filename_length = snprintf(
+                    writer.basefilename, sizeof(writer.basefilename),
+                    "%s/sb%02u_w%u_%.2f-%.2fMHz_%c_%u",
+                    cfg.folder.c_str(),
+                    static_cast<unsigned>(pkthdr.subband_id),
+                    static_cast<unsigned>(pkthdr.window_id), f_start / 1e6,
+                    f_stop / 1e6, beam_name,
+                    static_cast<unsigned>(pkthdr.n_channels));
+                if (filename_length < 0 ||
+                    static_cast<size_t>(filename_length) >=
+                        sizeof(writer.basefilename))
+                {
+                    cfg.logger_->error(
+                        "SDFITS base filename is too long for subband {}, "
+                        "window {}",
+                        pkthdr.subband_id, pkthdr.window_id);
+                    return;
+                }
+
+                writer.hdr.nchan = pkthdr.n_channels;
+                get_date_obs(
+                    pkthdr.timestamp_ns -
+                        static_cast<uint64_t>(pkthdr.exposure * 0.5 * 1e9),
+                    writer.hdr.date_obs);
+                writer.hdr.chan_bw = pkthdr.channel_bw_hz;
+                writer.hdr.obsfreq =
+                    pkthdr.start_freq_hz +
+                    pkthdr.channel_bw_hz * pkthdr.n_channels / 2;
+                writer.hdr.nsubband = 1;
+                writer.hdr.npol = 4;
+                std::unique_lock<std::mutex> cfitsio_lock(
+                    cfitsio_mutex, std::defer_lock);
+                if (!cfitsio_supports_parallel_io())
+                    cfitsio_lock.lock();
+                const int create_status = writer.sdfits_create();
+                if (create_status != 0)
+                {
+                    cfg.logger_->error(
+                        "Failed to create SDFITS file for subband {}, window "
+                        "{}, beam {}, status={}",
+                        pkthdr.subband_id, pkthdr.window_id, beam_name,
+                        create_status);
+                    return;
+                }
+                writers.emplace(filekey, writer_state);
+                cfg.logger_->info(
+                    "Created SDFITS output for subband {}, window {}, beam "
+                    "{}: {}",
+                    pkthdr.subband_id, pkthdr.window_id, beam_name,
+                    writer.filename);
+            }
+            else
+            {
+                writer_state = writer_it->second;
+            }
         }
 
-        writer->hdr.nchan = pkthdr.n_channels;
-        get_date_obs(
-            pkthdr.timestamp_ns -
-                static_cast<uint64_t>(pkthdr.exposure * 0.5 * 1e9),
-            writer->hdr.date_obs);
-        writer->hdr.chan_bw = pkthdr.channel_bw_hz;
-        writer->hdr.obsfreq =
-            pkthdr.start_freq_hz +
-            pkthdr.channel_bw_hz * pkthdr.n_channels / 2;
-        writer->hdr.nsubband = 1;
-        writer->hdr.npol = 4;
-        const int create_status = writer->sdfits_create();
-        if (create_status != 0)
+        std::lock_guard<std::mutex> writer_lock(writer_state->mutex);
+        std::unique_lock<std::mutex> cfitsio_lock(
+            cfitsio_mutex, std::defer_lock);
+        if (!cfitsio_supports_parallel_io())
+            cfitsio_lock.lock();
+        sdfits &writer = writer_state->writer;
+        writer.data_columns.data =
+            reinterpret_cast<unsigned char *>(full.data());
+        writer.data_columns.cal_on = pkthdr.noise_state;
+        writer.data_columns.integ_num =
+            static_cast<int>(pkthdr.integration_id);
+        writer.data_columns.centre_freq[0] = writer.hdr.obsfreq;
+        writer.data_columns.time =
+            40587 + pkthdr.timestamp_ns / 1e9 / 86400;
+        writer.data_columns.exposure = pkthdr.exposure;
+        const int write_status = writer.sdfits_write_subint();
+        if (write_status != 0)
         {
             cfg.logger_->error(
-                "Failed to create SDFITS file for subband {}, window {}, "
-                "beam {}, status={}",
-                pkthdr.subband_id, pkthdr.window_id, beam_name,
-                create_status);
-            delete writer;
-            return;
+                "Failed to write SDFITS row to {}, status={}",
+                writer.filename, write_status);
         }
-        writers[filekey] = writer;
-        cfg.logger_->info(
-            "Created SDFITS output for subband {}, window {}, beam {}: {}",
-            pkthdr.subband_id, pkthdr.window_id, beam_name,
-            writer->filename);
+        writer.data_columns.data = nullptr;
     }
-    else
-    {
-        writer = writer_it->second;
-    }
-
-    writer->data_columns.data =
-        reinterpret_cast<unsigned char *>(full.data());
-    writer->data_columns.cal_on = pkthdr.noise_state;
-    writer->data_columns.integ_num =
-        static_cast<int>(pkthdr.integration_id);
-    writer->data_columns.centre_freq[0] = writer->hdr.obsfreq;
-    writer->data_columns.time =
-        40587 + pkthdr.timestamp_ns / 1e9 / 86400;
-    writer->data_columns.exposure = pkthdr.exposure;
-    const int write_status = writer->sdfits_write_subint();
-    if (write_status != 0)
-    {
-        cfg.logger_->error(
-            "Failed to write SDFITS row to {}, status={}",
-            writer->filename, write_status);
-    }
-    writer->data_columns.data = nullptr;
 }
 
 
@@ -965,27 +995,82 @@ int dpdk()
     // uint16_t start_dest_port = 60000;
 
     std::vector<uint16_t> ports = {0};
-    // 初始化端口 0
+    auto lcore_params = generate_lcore_params(ports, cfg.recv_streams);
+    std::unordered_set<unsigned> assigned_lcores;
+    assigned_lcores.insert(rte_get_main_lcore());
+    for (const auto &param : lcore_params)
+    {
+        if (!assigned_lcores.insert(param.lcore_id).second)
+            rte_exit(EXIT_FAILURE,
+                     "Duplicate or main lcore %u assigned to RX worker\n",
+                     param.lcore_id);
+    }
+
+    std::vector<unsigned> processing_lcores;
+    RTE_LCORE_FOREACH(lcore_id)
+    {
+        if (assigned_lcores.count(lcore_id) == 0)
+            processing_lcores.push_back(lcore_id);
+    }
+
+    const size_t required_processing_lcores =
+        lcore_params.size() +
+        (cfg.observation_mode == ObservationMode::CONTINUUM ? 1 : 0);
+    if (processing_lcores.size() < required_processing_lcores)
+        rte_exit(EXIT_FAILURE,
+                 "Not enough DPDK lcores for packet processing: need %zu, "
+                 "found %zu\n",
+                 required_processing_lcores, processing_lcores.size());
+
+    std::vector<lcore_param> processing_params(lcore_params.size());
+    for (size_t i = 0; i < processing_params.size(); ++i)
+    {
+        processing_params[i].queue_id = static_cast<uint16_t>(i);
+        processing_params[i].lcore_id = processing_lcores[i];
+    }
+    const unsigned continuum_lcore =
+        cfg.observation_mode == ObservationMode::CONTINUUM
+            ? processing_lcores[lcore_params.size()]
+            : RTE_MAX_LCORE;
+
+    // Initialize the Ethernet device only after all worker assignments have
+    // been validated, so a bad CPU layout cannot leave a started port behind.
     if (port_init(0, mbuf_pool, cfg.recv_streams) != 0)
         rte_exit(EXIT_FAILURE, " Cannot init port %" PRIu16 "\n", 0);
 
-    // init port config
-    auto lcore_params = generate_lcore_params(ports, cfg.recv_streams);
-    unsigned lastcore_id;
-    for (int i = 0; i < lcore_params.size(); ++i)
+    for (size_t i = 0; i < lcore_params.size(); ++i)
     {
-        rte_eal_remote_launch(lcore_recv, &lcore_params[i], lcore_params[i].lcore_id);
+        const int launch_status = rte_eal_remote_launch(
+            lcore_recv, &lcore_params[i], lcore_params[i].lcore_id);
+        if (launch_status != 0)
+            rte_exit(EXIT_FAILURE,
+                     "Failed to launch RX worker for queue %zu on lcore %u: "
+                     "%d\n",
+                     i, lcore_params[i].lcore_id, launch_status);
+        cfg.logger_->info("RX queue {} worker launched on lcore {}", i,
+                          lcore_params[i].lcore_id);
     }
-    lastcore_id = lcore_params[lcore_params.size() - 1].lcore_id + 1;
-    for (int i = 0; i < lcore_params.size(); ++i)
+    for (size_t i = 0; i < processing_params.size(); ++i)
     {
-        struct lcore_param *recv_param = new lcore_param;
-        recv_param->lcore_id = lastcore_id + i;
-        recv_param->queue_id = i;
-        rte_eal_remote_launch(recv2mem, (void *)recv_param, recv_param->lcore_id);
+        const int launch_status = rte_eal_remote_launch(
+            recv2mem, &processing_params[i], processing_params[i].lcore_id);
+        if (launch_status != 0)
+            rte_exit(EXIT_FAILURE,
+                     "Failed to launch packet processor for queue %zu on "
+                     "lcore %u: %d\n",
+                     i, processing_params[i].lcore_id, launch_status);
+        cfg.logger_->info("RX queue {} processor launched on lcore {}", i,
+                          processing_params[i].lcore_id);
     }
-    lastcore_id = lastcore_id + lcore_params.size();
-    unsigned continuum_lcore = lastcore_id+1;
+
+    if (cfitsio_supports_parallel_io())
+        cfg.logger_->info(
+            "CFITSIO is reentrant; separate output files write concurrently");
+    else
+        cfg.logger_->warn(
+            "CFITSIO is not reentrant; output writes remain serialized for "
+            "data safety");
+
     if (cfg.observation_mode == ObservationMode::CONTINUUM)
     {
         int ret = rte_eal_remote_launch(
