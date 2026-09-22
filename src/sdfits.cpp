@@ -18,19 +18,9 @@ int sdfits::sdfits_create()
     // Initialize the key variables if needed
     if (new_file == 1)
     {
-        // first time writing to the file
-        // Create the output directory if needed
-        char datadir[1024];
-        strncpy(datadir, basefilename, 1023);
-        char *last_slash = strrchr(datadir, '/');
-        if (last_slash != NULL && last_slash != datadir)
-        {
-            *last_slash = '\0';
-            printf("Using directory '%s' for output.\n", datadir);
-            char cmd[1048];
-            sprintf(cmd, "mkdir -m 1777 -p %s", datadir);
-            system(cmd);
-        }
+        // GlobalConfig creates the observation directory once during startup.
+        // Running a shell for every output file caused a large startup stall
+        // when all processing servers began sending at the same time.
         new_file = 0;
     }
     rownum = 1;
@@ -214,7 +204,12 @@ int sdfits::sdfits_write_subint()
     fits_write_col(fptr, TINT, 21, row, 1, 1, &(data_columns.cal_on), &status);
     // fits_write_col(fptr, TDOUBLE, 22, row, 1, 1, &(data_columns.cal_phase), &status);
     
-    fits_flush_file(fptr, &status);
+    // Flushing every one-megabyte row turns synchronized integrations from
+    // many servers into a disk/metadata storm. CFITSIO keeps its own buffers;
+    // periodically flush for visibility and durability without blocking every
+    // packet-processing cycle (FITS I/O runs on dedicated writer threads).
+    if (row % 8 == 0)
+        fits_flush_file(fptr, &status);
     if (status)
         fits_report_error(stderr, status);
     // Flush the buffers if not finished with the file

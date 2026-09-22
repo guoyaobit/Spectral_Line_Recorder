@@ -2,7 +2,8 @@
 Debug: true
 # name of observ object
 object: test
-# on/off true/false
+# true/on: pointing at the observation source; output names contain ON
+# false/off: pointing at sky background; output names contain OFF
 source_on: true
 # source_on: false
 recv_streams: 8 

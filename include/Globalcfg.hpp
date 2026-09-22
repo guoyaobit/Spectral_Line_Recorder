@@ -1,5 +1,7 @@
 #pragma once
 
+#include <algorithm>
+#include <cctype>
 #include <vector>
 #include <memory>
 #include <thread>
@@ -129,6 +131,10 @@ public:
     std::string object = "";
     bool source_on = true;
     bool Debug_mode = false;
+    const char *source_label() const
+    {
+        return source_on ? "ON" : "OFF";
+    }
     std::string getTimeString()
     {
         auto now = std::chrono::system_clock::now();
@@ -165,22 +171,59 @@ public:
                 folder = config["Storage_folder"].as<std::string>();
             if(config["object"])
                 object = config["object"].as<std::string>();
-            if(config["source_on"])
-                source_on = config["source_on"].as<bool>();
+            if (!config["source_on"] || !config["source_on"].IsScalar())
+            {
+                logger_->error(
+                    "Configuration must contain scalar source_on "
+                    "(true/on for source, false/off for sky background)");
+                return false;
+            }
+            const std::string source_value =
+                config["source_on"].Scalar();
+            std::string normalized_source_value = source_value;
+            std::transform(normalized_source_value.begin(),
+                           normalized_source_value.end(),
+                           normalized_source_value.begin(),
+                           [](unsigned char c) { return std::tolower(c); });
+            if (normalized_source_value == "true" ||
+                normalized_source_value == "on" ||
+                normalized_source_value == "yes" ||
+                normalized_source_value == "1")
+            {
+                source_on = true;
+            }
+            else if (normalized_source_value == "false" ||
+                     normalized_source_value == "off" ||
+                     normalized_source_value == "no" ||
+                     normalized_source_value == "0")
+            {
+                source_on = false;
+            }
+            else
+            {
+                logger_->error(
+                    "Invalid source_on value '{}'; use true/on or false/off",
+                    source_value);
+                return false;
+            }
             const std::string time_string = getTimeString();
 
             if (observation_mode == ObservationMode::SPECTRAL)
             {
                 folder += "/" +
-                        config["object"].as<std::string>() + "_" +
-                        config["source_on"].as<std::string>() + "_" +
+                        object + "_" + source_label() + "_" +
                         time_string;
             }
             else if (observation_mode == ObservationMode::CONTINUUM)
             {
-                folder += "/" + time_string;
+                folder += "/" + object + "_" + source_label() + "_" +
+                          time_string;
             }
             std::filesystem::create_directories(folder);
+            logger_->info(
+                "Observation target state: {} ({})",
+                source_label(),
+                source_on ? "pointing at source" : "sky background");
 
         }
         catch (const YAML::Exception &e)

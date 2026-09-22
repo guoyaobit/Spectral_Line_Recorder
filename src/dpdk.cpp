@@ -26,9 +26,12 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -173,12 +176,14 @@ struct SpectrumFrame
     uint16_t total_pkt, received_pkt;
     uint32_t n_channels;
     spectrum_header header;
-    std::vector<std::vector<float>> packets;
+    std::vector<float> data;
+    std::vector<uint8_t> received;
     std::chrono::steady_clock::time_point created_at;
     explicit SpectrumFrame(const spectrum_header &first_header)
         : total_pkt(first_header.total_pkt), received_pkt(0),
           n_channels(first_header.n_channels), header(first_header),
-          packets(first_header.total_pkt),
+          data(static_cast<size_t>(first_header.n_channels) * 4),
+          received(first_header.total_pkt, 0),
           created_at(std::chrono::steady_clock::now()) {}
 };
 
@@ -221,7 +226,17 @@ struct FrameKeyHash
     }
 };
 
-std::unordered_map<FrameKey, SpectrumFrame *, FrameKeyHash> frame_map;
+struct FrameShard
+{
+    std::mutex mutex;
+    std::unordered_map<FrameKey, SpectrumFrame *, FrameKeyHash> frames;
+    std::chrono::steady_clock::time_point last_cleanup =
+        std::chrono::steady_clock::now();
+};
+
+constexpr size_t FRAME_SHARD_COUNT = 16;
+constexpr auto SPECTRUM_FRAME_TIMEOUT = std::chrono::seconds(5);
+std::array<FrameShard, FRAME_SHARD_COUNT> frame_shards;
 struct BandKey
 {
     uint16_t subband_id;
@@ -282,11 +297,92 @@ struct WriterState
 };
 
 std::unordered_map<BandKey, std::shared_ptr<WriterState>, BandKeyHash> writers;
-std::mutex frame_map_mutex;
 std::mutex writers_map_mutex;
 std::mutex cfitsio_mutex;
-std::chrono::steady_clock::time_point last_frame_cleanup =
-    std::chrono::steady_clock::now();
+
+struct CompletedSpectrum
+{
+    spectrum_header header;
+    std::vector<float> data;
+};
+
+struct SpectrumWriteQueue
+{
+    std::mutex mutex;
+    std::condition_variable ready;
+    std::deque<std::unique_ptr<CompletedSpectrum>> jobs;
+};
+
+constexpr size_t SPECTRUM_WRITER_COUNT = 8;
+constexpr size_t SPECTRUM_WRITE_QUEUE_CAPACITY = 64;
+std::vector<std::unique_ptr<SpectrumWriteQueue>> spectrum_write_queues;
+
+void write_spectrum_frame(const spectrum_header &pkthdr,
+                          std::vector<float> full);
+
+size_t spectrum_writer_index(const spectrum_header &header)
+{
+    // All rows for one subband/beam/window are handled by the same worker.
+    // This preserves row order and ensures that each logical output file has
+    // exactly one writer, while unrelated output files can write in parallel.
+    size_t identity = static_cast<size_t>(header.subband_id) * 1315423911U;
+    identity ^= static_cast<size_t>(header.window_id) * 2654435761U;
+    identity ^= static_cast<size_t>(header.beam_id) * 2246822519U;
+    return identity % SPECTRUM_WRITER_COUNT;
+}
+
+bool enqueue_spectrum_write(const spectrum_header &header,
+                            std::vector<float> data)
+{
+    const size_t index = spectrum_writer_index(header);
+    SpectrumWriteQueue &queue = *spectrum_write_queues[index];
+    {
+        std::lock_guard<std::mutex> lock(queue.mutex);
+        if (queue.jobs.size() >= SPECTRUM_WRITE_QUEUE_CAPACITY)
+        {
+            static std::atomic<uint64_t> write_queue_drop_count{0};
+            const uint64_t count = write_queue_drop_count.fetch_add(1) + 1;
+            if (count == 1 || count % 100 == 0)
+            {
+                cfg.logger_->error(
+                    "Dropped completed spectrum because writer queue {} is "
+                    "full; subband={}, window={}, beam={}, count={}",
+                    index, header.subband_id, header.window_id,
+                    header.beam_id == 0 ? 'A' : 'B', count);
+            }
+            return false;
+        }
+        queue.jobs.emplace_back(new CompletedSpectrum{header, std::move(data)});
+    }
+    queue.ready.notify_one();
+    return true;
+}
+
+void spectrum_writer_worker(size_t index)
+{
+    SpectrumWriteQueue &queue = *spectrum_write_queues[index];
+    cfg.logger_->info("Spectrum writer {} started", index);
+    while (true)
+    {
+        std::unique_ptr<CompletedSpectrum> job;
+        {
+            std::unique_lock<std::mutex> lock(queue.mutex);
+            queue.ready.wait(lock, [&queue] { return !queue.jobs.empty(); });
+            job = std::move(queue.jobs.front());
+            queue.jobs.pop_front();
+        }
+        write_spectrum_frame(job->header, std::move(job->data));
+    }
+}
+
+void start_spectrum_writers()
+{
+    spectrum_write_queues.reserve(SPECTRUM_WRITER_COUNT);
+    for (size_t i = 0; i < SPECTRUM_WRITER_COUNT; ++i)
+        spectrum_write_queues.emplace_back(new SpectrumWriteQueue());
+    for (size_t i = 0; i < SPECTRUM_WRITER_COUNT; ++i)
+        std::thread(spectrum_writer_worker, i).detach();
+}
 
 bool cfitsio_supports_parallel_io()
 {
@@ -356,17 +452,19 @@ void receive_packet(const spectrum_header &pkthdr, const float *payload, size_t 
                  pkthdr.window_id, pkthdr.beam_id};
     std::vector<float> full;
     {
-        std::lock_guard<std::mutex> lock(frame_map_mutex);
+        FrameShard &shard =
+            frame_shards[FrameKeyHash{}(key) % FRAME_SHARD_COUNT];
+        std::lock_guard<std::mutex> lock(shard.mutex);
         const auto now = std::chrono::steady_clock::now();
-        if (now - last_frame_cleanup >= std::chrono::seconds(5))
+        if (now - shard.last_cleanup >= std::chrono::seconds(5))
         {
             size_t expired = 0;
-            for (auto it = frame_map.begin(); it != frame_map.end();)
+            for (auto it = shard.frames.begin(); it != shard.frames.end();)
             {
-                if (now - it->second->created_at >= std::chrono::seconds(30))
+                if (now - it->second->created_at >= SPECTRUM_FRAME_TIMEOUT)
                 {
                     delete it->second;
-                    it = frame_map.erase(it);
+                    it = shard.frames.erase(it);
                     ++expired;
                 }
                 else
@@ -378,15 +476,15 @@ void receive_packet(const spectrum_header &pkthdr, const float *payload, size_t 
                 cfg.logger_->warn(
                     "Discarded {} incomplete spectrum frame(s) after timeout",
                     expired);
-            last_frame_cleanup = now;
+            shard.last_cleanup = now;
         }
 
         SpectrumFrame *frame;
-        auto it = frame_map.find(key);
-        if (it == frame_map.end())
+        auto it = shard.frames.find(key);
+        if (it == shard.frames.end())
         {
             frame = new SpectrumFrame(pkthdr);
-            frame_map[key] = frame;
+            shard.frames[key] = frame;
         }
         else
         {
@@ -403,8 +501,7 @@ void receive_packet(const spectrum_header &pkthdr, const float *payload, size_t 
             }
         }
 
-        auto &packet = frame->packets[pkthdr.pkt_id];
-        if (!packet.empty())
+        if (frame->received[pkthdr.pkt_id] != 0)
         {
             cfg.logger_->warn(
                 "Ignored duplicate spectrum fragment: subband={}, window={}, "
@@ -413,18 +510,18 @@ void receive_packet(const spectrum_header &pkthdr, const float *payload, size_t 
             return;
         }
 
-        packet.resize(payload_len_bytes / sizeof(float));
-        memcpy(packet.data(), payload, payload_len_bytes);
+        memcpy(reinterpret_cast<uint8_t *>(frame->data.data()) +
+                   fragment_offset,
+               payload, payload_len_bytes);
+        frame->received[pkthdr.pkt_id] = 1;
         frame->received_pkt++;
         if (frame->received_pkt != frame->total_pkt)
             return;
 
-        full.reserve(static_cast<size_t>(frame->n_channels) * 4);
-        for (auto &fragment : frame->packets)
-            full.insert(full.end(), fragment.begin(), fragment.end());
+        full = std::move(frame->data);
 
         delete frame;
-        frame_map.erase(key);
+        shard.frames.erase(key);
     }
 
     const size_t expected_values = static_cast<size_t>(pkthdr.n_channels) * 4;
@@ -437,6 +534,17 @@ void receive_packet(const spectrum_header &pkthdr, const float *payload, size_t 
         return;
     }
 
+    // Never perform FITS I/O on a DPDK packet-processing lcore. Eight servers
+    // can complete many one-megabyte frames at the same instant; synchronous
+    // file creation or flush here prevents that queue from draining and loses
+    // later UDP fragments at the NIC. The sharded writer queues keep every
+    // subband/beam/window file independent without blocking packet assembly.
+    enqueue_spectrum_write(pkthdr, std::move(full));
+}
+
+void write_spectrum_frame(const spectrum_header &pkthdr,
+                          std::vector<float> full)
+{
     const double f_start = pkthdr.start_freq_hz;
     const double f_stop =
         f_start + pkthdr.channel_bw_hz * pkthdr.n_channels;
@@ -466,11 +574,11 @@ void receive_packet(const spectrum_header &pkthdr, const float *payload, size_t 
                 const char beam_name = pkthdr.beam_id == 0 ? 'A' : 'B';
                 const int filename_length = snprintf(
                     writer.basefilename, sizeof(writer.basefilename),
-                    "%s/sb%02u_w%u_%.2f-%.2fMHz_%c_%u",
+                    "%s/sb%02u_w%u_%.2f-%.2fMHz_%c_%s_%u",
                     cfg.folder.c_str(),
                     static_cast<unsigned>(pkthdr.subband_id),
                     static_cast<unsigned>(pkthdr.window_id), f_start / 1e6,
-                    f_stop / 1e6, beam_name,
+                    f_stop / 1e6, beam_name, cfg.source_label(),
                     static_cast<unsigned>(pkthdr.n_channels));
                 if (filename_length < 0 ||
                     static_cast<size_t>(filename_length) >=
@@ -989,7 +1097,7 @@ static int continuum_worker(void *)
         "subband/beam scalar(s) per integration",
         rte_lcore_id(), cfg.continuum_inputs);
     const std::string filename =
-        cfg.folder + "/continuum.fits";
+        cfg.folder + "/continuum_" + cfg.source_label() + ".fits";
 
     // worker 启动时只创建一次
     if (!m_continuum_fits.create(filename, 0))
@@ -1031,6 +1139,9 @@ int dpdk()
     int ret = rte_eal_init(argc, argv);
     if (ret < 0)
         rte_exit(EXIT_FAILURE, "Error with EAL init\n");
+
+    if (cfg.observation_mode == ObservationMode::SPECTRAL)
+        start_spectrum_writers();
 
     struct rte_mempool *mbuf_pool = rte_pktmbuf_pool_create("MBUF_POOL",
                                                             NUM_MBUFS * 2, MBUF_CACHE_SIZE, 0, 10240,
