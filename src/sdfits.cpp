@@ -33,7 +33,6 @@ int sdfits::sdfits_create()
         }
         new_file = 0;
     }
-    filenum++;
     rownum = 1;
 
     // basefilename is a stem. Be tolerant of older callers that included the
@@ -47,14 +46,21 @@ int sdfits::sdfits_create()
         filename_stem.erase(filename_stem.size() - extension.size());
     }
 
-    int filename_length = snprintf(filename, sizeof(filename), "%s_%04d.sdfits",
-                                   filename_stem.c_str(), filenum);
-    if (filename_length < 0 ||
-        static_cast<size_t>(filename_length) >= sizeof(filename))
+    // Continue after files left by an earlier recorder process. Reusing
+    // _0001 after a restart makes CFITSIO reject creation and stops storage.
+    int filename_length = 0;
+    do
     {
-        fprintf(stderr, "SDFITS output filename is too long.\n");
-        return 1;
-    }
+        filenum++;
+        filename_length = snprintf(filename, sizeof(filename), "%s_%04d.sdfits",
+                                   filename_stem.c_str(), filenum);
+        if (filename_length < 0 ||
+            static_cast<size_t>(filename_length) >= sizeof(filename))
+        {
+            fprintf(stderr, "SDFITS output filename is too long.\n");
+            return 1;
+        }
+    } while (access(filename, F_OK) == 0);
 
     // Create basic FITS file from our template
     // char *vegas_dir = getenv("VEGAS_DIR");

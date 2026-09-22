@@ -25,7 +25,10 @@
 #include "readerwritercircularbuffer.h"
 #include <unordered_map>
 #include <unordered_set>
+#include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <cmath>
 #include <functional>
 #include <mutex>
 #include <ctime>
@@ -40,6 +43,10 @@
 #define SPECTRUM_MAGIC 0x534C5231
 #define SPECTRUM_VERSION_V1 1
 #define SPECTRUM_VERSION_V2 2
+constexpr uint16_t MAX_GLOBAL_SUBBAND_ID = 31;
+constexpr uint16_t MAX_WINDOW_ID = 3;
+constexpr uint32_t MAX_SPECTRUM_CHANNELS = 65536U * 256U;
+constexpr size_t SPECTRUM_CHUNK_DATA_SIZE = 8192;
 
 auto &cfg = GlobalConfig::getInstance();
 constexpr size_t EXPECTED_PKT_LEN = 8266;
@@ -140,11 +147,19 @@ lcore_recv(void *arg)
                 rte_pktmbuf_free(mbuf);
                 continue;
             }
-            struct rte_udp_hdr *udp_hdr = (struct rte_udp_hdr *)((unsigned char *)ip_hdr + sizeof(struct rte_ipv4_hdr));
-            // uint32_t dst_ip = rte_be_to_cpu_32(ip_hdr->dst_addr);
-            uint16_t dst_port = rte_be_to_cpu_16(udp_hdr->dst_port);
             rte_ring *ring = rx_rings[queue_id];
-            rte_ring_enqueue(ring, mbuf);
+            if (rte_ring_enqueue(ring, mbuf) != 0)
+            {
+                static std::atomic<uint64_t> ring_drop_count{0};
+                const uint64_t count = ring_drop_count.fetch_add(1) + 1;
+                if (count == 1 || count % 100000 == 0)
+                {
+                    cfg.logger_->warn(
+                        "Dropped packets because RX ring {} is full; count={}",
+                        queue_id, count);
+                }
+                rte_pktmbuf_free(mbuf);
+            }
         }
     }
     return 0;
@@ -156,14 +171,21 @@ struct SpectrumFrame
 {
     uint16_t total_pkt, received_pkt;
     uint32_t n_channels;
+    spectrum_header header;
     std::vector<std::vector<float>> packets;
-    SpectrumFrame(uint16_t total, uint32_t nchan)
-        : total_pkt(total), received_pkt(0), n_channels(nchan), packets(total) {}
+    std::chrono::steady_clock::time_point created_at;
+    explicit SpectrumFrame(const spectrum_header &first_header)
+        : total_pkt(first_header.total_pkt), received_pkt(0),
+          n_channels(first_header.n_channels), header(first_header),
+          packets(first_header.total_pkt),
+          created_at(std::chrono::steady_clock::now()) {}
 };
 
 struct FrameKey
 {
     uint64_t timestamp_ns;
+    uint32_t obs_id;
+    uint32_t integration_id;
     uint16_t subband_id;
     uint16_t window_id;
     uint8_t beam_id;
@@ -171,6 +193,8 @@ struct FrameKey
     bool operator==(const FrameKey &o) const noexcept
     {
         return timestamp_ns == o.timestamp_ns &&
+               obs_id == o.obs_id &&
+               integration_id == o.integration_id &&
                subband_id == o.subband_id &&
                window_id == o.window_id &&
                beam_id == o.beam_id;
@@ -182,6 +206,10 @@ struct FrameKeyHash
     size_t operator()(const FrameKey &k) const noexcept
     {
         size_t h = std::hash<uint64_t>{}(k.timestamp_ns);
+        h ^= std::hash<uint32_t>{}(k.obs_id) + 0x9e3779b9 +
+             (h << 6) + (h >> 2);
+        h ^= std::hash<uint32_t>{}(k.integration_id) + 0x9e3779b9 +
+             (h << 6) + (h >> 2);
         h ^= std::hash<uint16_t>{}(k.subband_id) + 0x9e3779b9 +
              (h << 6) + (h >> 2);
         h ^= std::hash<uint16_t>{}(k.window_id) + 0x9e3779b9 +
@@ -249,12 +277,57 @@ void get_date_obs(uint64_t timestamp_ns, char date_obs[16])
 std::unordered_map<BandKey, sdfits *, BandKeyHash> writers;
 std::mutex frame_map_mutex;
 std::mutex writers_mutex;
+std::chrono::steady_clock::time_point last_frame_cleanup =
+    std::chrono::steady_clock::now();
+
+bool same_frame_metadata(const spectrum_header &a,
+                         const spectrum_header &b)
+{
+    return a.magic == b.magic && a.version == b.version &&
+           a.timestamp_ns == b.timestamp_ns && a.obs_id == b.obs_id &&
+           a.integration_id == b.integration_id &&
+           a.subband_id == b.subband_id && a.window_id == b.window_id &&
+           a.subband_start_freq == b.subband_start_freq &&
+           a.subband_end_freq == b.subband_end_freq &&
+           a.start_freq_hz == b.start_freq_hz &&
+           a.channel_bw_hz == b.channel_bw_hz &&
+           a.n_channels == b.n_channels && a.stokes == b.stokes &&
+           a.total_pkt == b.total_pkt && a.exposure == b.exposure &&
+           a.noise_state == b.noise_state && a.cal_mode == b.cal_mode &&
+           a.beam_id == b.beam_id && a.ra == b.ra && a.dec == b.dec &&
+           a.flags == b.flags;
+}
 
 // 核心函数：接收 UDP 包 + 多包重组 + 合并 + 写文件
 void receive_packet(const spectrum_header &pkthdr, const float *payload, size_t payload_len_bytes)
 {
+    if (pkthdr.n_channels == 0 ||
+        pkthdr.n_channels > MAX_SPECTRUM_CHANNELS)
+    {
+        cfg.logger_->warn(
+            "Dropped spectrum fragment with invalid channel count: "
+            "subband={}, window={}, channels={}",
+            pkthdr.subband_id, pkthdr.window_id, pkthdr.n_channels);
+        return;
+    }
+
+    const size_t expected_frame_bytes =
+        static_cast<size_t>(pkthdr.n_channels) * 4 * sizeof(float);
+    const size_t expected_total_pkt =
+        (expected_frame_bytes + SPECTRUM_CHUNK_DATA_SIZE - 1) /
+        SPECTRUM_CHUNK_DATA_SIZE;
+    const size_t fragment_offset =
+        static_cast<size_t>(pkthdr.pkt_id) * SPECTRUM_CHUNK_DATA_SIZE;
+    const size_t expected_fragment_bytes =
+        fragment_offset < expected_frame_bytes
+            ? std::min(SPECTRUM_CHUNK_DATA_SIZE,
+                       expected_frame_bytes - fragment_offset)
+            : 0;
+
     if (pkthdr.total_pkt == 0 || pkthdr.pkt_id >= pkthdr.total_pkt ||
-        pkthdr.n_channels == 0 || payload_len_bytes % sizeof(float) != 0)
+        pkthdr.total_pkt != expected_total_pkt ||
+        payload_len_bytes != expected_fragment_bytes ||
+        payload_len_bytes % sizeof(float) != 0)
     {
         cfg.logger_->warn(
             "Dropped invalid spectrum fragment: subband={}, window={}, "
@@ -264,23 +337,49 @@ void receive_packet(const spectrum_header &pkthdr, const float *payload, size_t 
         return;
     }
 
-    FrameKey key{pkthdr.timestamp_ns, pkthdr.subband_id,
+    FrameKey key{pkthdr.timestamp_ns, pkthdr.obs_id,
+                 pkthdr.integration_id, pkthdr.subband_id,
                  pkthdr.window_id, pkthdr.beam_id};
     std::vector<float> full;
     {
         std::lock_guard<std::mutex> lock(frame_map_mutex);
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last_frame_cleanup >= std::chrono::seconds(5))
+        {
+            size_t expired = 0;
+            for (auto it = frame_map.begin(); it != frame_map.end();)
+            {
+                if (now - it->second->created_at >= std::chrono::seconds(30))
+                {
+                    delete it->second;
+                    it = frame_map.erase(it);
+                    ++expired;
+                }
+                else
+                {
+                    ++it;
+                }
+            }
+            if (expired != 0)
+                cfg.logger_->warn(
+                    "Discarded {} incomplete spectrum frame(s) after timeout",
+                    expired);
+            last_frame_cleanup = now;
+        }
+
         SpectrumFrame *frame;
         auto it = frame_map.find(key);
         if (it == frame_map.end())
         {
-            frame = new SpectrumFrame(pkthdr.total_pkt, pkthdr.n_channels);
+            frame = new SpectrumFrame(pkthdr);
             frame_map[key] = frame;
         }
         else
         {
             frame = it->second;
             if (frame->total_pkt != pkthdr.total_pkt ||
-                frame->n_channels != pkthdr.n_channels)
+                frame->n_channels != pkthdr.n_channels ||
+                !same_frame_metadata(frame->header, pkthdr))
             {
                 cfg.logger_->warn(
                     "Dropped inconsistent spectrum fragment for subband={}, "
@@ -300,7 +399,8 @@ void receive_packet(const spectrum_header &pkthdr, const float *payload, size_t 
             return;
         }
 
-        packet.assign(payload, payload + payload_len_bytes / sizeof(float));
+        packet.resize(payload_len_bytes / sizeof(float));
+        memcpy(packet.data(), payload, payload_len_bytes);
         frame->received_pkt++;
         if (frame->received_pkt != frame->total_pkt)
             return;
@@ -401,6 +501,9 @@ void receive_packet(const spectrum_header &pkthdr, const float *payload, size_t 
     writer->data_columns.data =
         reinterpret_cast<unsigned char *>(full.data());
     writer->data_columns.cal_on = pkthdr.noise_state;
+    writer->data_columns.integ_num =
+        static_cast<int>(pkthdr.integration_id);
+    writer->data_columns.centre_freq[0] = writer->hdr.obsfreq;
     writer->data_columns.time =
         40587 + pkthdr.timestamp_ns / 1e9 / 86400;
     writer->data_columns.exposure = pkthdr.exposure;
@@ -579,7 +682,45 @@ recv2mem(void *args)
         {
             continue;
         }
-        uint8_t *udp_payload = rte_pktmbuf_mtod_offset(mbuf, uint8_t *, 42);
+        const uint32_t pkt_len = rte_pktmbuf_pkt_len(mbuf);
+        const uint32_t data_len = rte_pktmbuf_data_len(mbuf);
+        if (mbuf->nb_segs != 1 ||
+            data_len < sizeof(rte_ether_hdr) + sizeof(rte_ipv4_hdr) +
+                           sizeof(rte_udp_hdr) + sizeof(spectrum_header))
+        {
+            rte_pktmbuf_free(mbuf);
+            continue;
+        }
+
+        uint8_t *packet_data = rte_pktmbuf_mtod(mbuf, uint8_t *);
+        const auto *eth_hdr =
+            reinterpret_cast<const rte_ether_hdr *>(packet_data);
+        const auto *ip_hdr = reinterpret_cast<const rte_ipv4_hdr *>(
+            packet_data + sizeof(rte_ether_hdr));
+        const size_t ip_header_len =
+            static_cast<size_t>(ip_hdr->version_ihl & 0x0f) * 4;
+        const size_t udp_offset = sizeof(rte_ether_hdr) + ip_header_len;
+        const size_t payload_offset = udp_offset + sizeof(rte_udp_hdr);
+        if (eth_hdr->ether_type != rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4) ||
+            ip_hdr->next_proto_id != IPPROTO_UDP ||
+            ip_header_len < sizeof(rte_ipv4_hdr) ||
+            payload_offset + sizeof(spectrum_header) > data_len)
+        {
+            rte_pktmbuf_free(mbuf);
+            continue;
+        }
+
+        const auto *udp_hdr = reinterpret_cast<const rte_udp_hdr *>(
+            packet_data + udp_offset);
+        const size_t udp_len = rte_be_to_cpu_16(udp_hdr->dgram_len);
+        if (udp_len < sizeof(rte_udp_hdr) + sizeof(spectrum_header) ||
+            udp_offset + udp_len > pkt_len ||
+            udp_offset + udp_len > data_len)
+        {
+            rte_pktmbuf_free(mbuf);
+            continue;
+        }
+        uint8_t *udp_payload = packet_data + payload_offset;
 
         spectrum_header pkthdr;
         memcpy(&pkthdr, udp_payload, sizeof(spectrum_header));
@@ -625,16 +766,30 @@ recv2mem(void *args)
             rte_pktmbuf_free(mbuf);
             continue;
         }
-        // payload 数据指针
-        float *payload = reinterpret_cast<float *>(udp_payload + sizeof(spectrum_header));
-        uint32_t  pkt_len = rte_pktmbuf_pkt_len(mbuf);
-        if(pkt_len <= 42 + sizeof(spectrum_header))
+        if (pkthdr.subband_id > MAX_GLOBAL_SUBBAND_ID ||
+            pkthdr.window_id > MAX_WINDOW_ID ||
+            !std::isfinite(pkthdr.start_freq_hz) ||
+            !std::isfinite(pkthdr.channel_bw_hz) ||
+            pkthdr.channel_bw_hz <= 0.0 ||
+            !std::isfinite(pkthdr.exposure) || pkthdr.exposure <= 0.0f)
         {
+            static std::atomic<uint64_t> invalid_index_count{0};
+            const uint64_t count = invalid_index_count.fetch_add(1) + 1;
+            if (count == 1 || count % 100000 == 0)
+            {
+                cfg.logger_->warn(
+                    "Dropped spectrum packets with invalid identity or "
+                    "metadata: subband={}, window={}, beam={}, count={}",
+                    pkthdr.subband_id, pkthdr.window_id, pkthdr.beam_id,
+                    count);
+            }
             rte_pktmbuf_free(mbuf);
             continue;
         }
+        // payload 数据指针
+        float *payload = reinterpret_cast<float *>(udp_payload + sizeof(spectrum_header));
         size_t payload_len_bytes =
-            pkt_len - 42 - sizeof(spectrum_header);
+            udp_len - sizeof(rte_udp_hdr) - sizeof(spectrum_header);
         if (cfg.observation_mode == ObservationMode::CONTINUUM)
         {
             if (payload_len_bytes < sizeof(float))
