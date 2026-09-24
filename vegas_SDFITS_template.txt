@@ -33,7 +33,9 @@ NMATRIX =                    1 / 1 dataset per row
 TELESCOP= '7mm'                / Telescope name
 BANDWID =                    * / Bandwidth of entire backend
 FREQRES =                    * / Width of each original spectral channel
-DATE-OBS= '                '   / Date of observation (YYYY-MM-DDThh:mm:ss UTC)
+DATE-OBS= '2000-01-01T00:00:00.000000000' / UTC observation start
+MJD-OBS =                  0.0 / UTC observation start [MJD]
+TIMESYS = 'UTC     '           / Time scale for DATE-OBS, MJD-OBS and TIME
 TSYS    =                    * / System temperature
 #
 ### Shared (optional) SDFITS header fields ###

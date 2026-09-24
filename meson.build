@@ -30,3 +30,9 @@ executable('7mm_recorder',
   dependencies:  [cfitsio_dep,yaml,spdlog_dep],
   link_with: dpdk_lib,
 )
+
+time_utils_test = executable('time_utils_test',
+  'tests/time_utils_test.cpp',
+  include_directories: inc,
+)
+test('time_utils', time_utils_test)

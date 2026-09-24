@@ -35,7 +35,7 @@ public:
     char telescope[16]; // Telescope used
     double bandwidth;   // Bandwidth of the entire backend
     double freqres;     // Width of each spectral channel in the file
-    char date_obs[16];  // Date of observation (dd/mm/yy)
+    char date_obs[32];  // UTC integration start (FITS date-time format)
     double tsys;        // System temperature
 
     char projid[16];   // The project ID

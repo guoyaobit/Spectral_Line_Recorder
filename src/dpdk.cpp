@@ -38,6 +38,7 @@
 #include <ctime>
 #include "sdfits.h"
 #include "ContinuumFits.h"
+#include "time_utils.h"
 // #include "sdfits_writer.h"
 #define nb_rxd_SIZE 8192
 #define NUM_MBUFS 262144
@@ -276,20 +277,6 @@ struct BandKeyHash
         return h;
     }
 };
-void get_date_obs(uint64_t timestamp_ns, char date_obs[16])
-{
-    time_t sec = static_cast<time_t>(timestamp_ns / 1000000000ULL);
-
-    struct tm utc_tm;
-    gmtime_r(&sec, &utc_tm);
-
-    snprintf(date_obs,
-             16,
-             "%02d/%02d/%02d",
-             utc_tm.tm_mday,
-             utc_tm.tm_mon + 1,
-             utc_tm.tm_year % 100);
-}
 struct WriterState
 {
     sdfits writer;
@@ -592,10 +579,20 @@ void write_spectrum_frame(const spectrum_header &pkthdr,
                 }
 
                 writer.hdr.nchan = pkthdr.n_channels;
-                get_date_obs(
-                    pkthdr.timestamp_ns -
-                        static_cast<uint64_t>(pkthdr.exposure * 0.5 * 1e9),
-                    writer.hdr.date_obs);
+                const uint64_t start_ns =
+                    spectrum_time::integration_start_ns(
+                        pkthdr.timestamp_ns, pkthdr.exposure);
+                if (!spectrum_time::format_fits_utc(
+                        start_ns, writer.hdr.date_obs,
+                        sizeof(writer.hdr.date_obs)))
+                {
+                    cfg.logger_->error(
+                        "Failed to format DATE-OBS for timestamp {}",
+                        start_ns);
+                    return;
+                }
+                writer.hdr.sttmjd = spectrum_time::unix_ns_to_mjd(start_ns);
+                writer.hdr.hwexposr = pkthdr.exposure;
                 writer.hdr.chan_bw = pkthdr.channel_bw_hz;
                 writer.hdr.obsfreq =
                     pkthdr.start_freq_hz +
@@ -641,8 +638,9 @@ void write_spectrum_frame(const spectrum_header &pkthdr,
         writer.data_columns.integ_num =
             static_cast<int>(pkthdr.integration_id);
         writer.data_columns.centre_freq[0] = writer.hdr.obsfreq;
-        writer.data_columns.time =
-            40587 + pkthdr.timestamp_ns / 1e9 / 86400;
+        writer.data_columns.time = spectrum_time::unix_ns_to_mjd(
+            spectrum_time::integration_start_ns(
+                pkthdr.timestamp_ns, pkthdr.exposure));
         writer.data_columns.exposure = pkthdr.exposure;
         const int write_status = writer.sdfits_write_subint();
         if (write_status != 0)

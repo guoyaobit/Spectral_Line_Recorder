@@ -92,6 +92,7 @@ int sdfits::sdfits_create()
     fits_update_key(fptr, TSTRING, "TELESCOP", hdr.telescope, NULL, &status);
     fits_update_key(fptr, TDOUBLE, "BANDWID", &(hdr.bandwidth), NULL, &status);
     fits_update_key(fptr, TSTRING, "DATE-OBS", hdr.date_obs, NULL, &status);
+    fits_update_key(fptr, TDOUBLE, "MJD-OBS", &(hdr.sttmjd), NULL, &status);
     fits_update_key(fptr, TDOUBLE, "TSYS", &(hdr.tsys), NULL, &status);
 
     fits_update_key(fptr, TSTRING, "PROJID", hdr.projid, NULL, &status);

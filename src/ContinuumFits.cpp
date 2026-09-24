@@ -1,16 +1,8 @@
 #include "ContinuumFits.h"
+#include "time_utils.h"
 
 #include <cstdio>
 #include <cstdlib>
-
-namespace
-{
-
-constexpr double UNIX_MJD = 40587.0;
-constexpr double NS_PER_SEC = 1.0e9;
-constexpr double SEC_PER_DAY = 86400.0;
-
-}
 
 ContinuumFits::ContinuumFits()
     : m_fptr(nullptr),
@@ -73,6 +65,15 @@ bool ContinuumFits::create(const std::string &filename,
         "INTTIME",
         &m_integration_time_sec,
         "Integration time [s]",
+        &m_status);
+
+    char timesys[] = "UTC";
+    fits_update_key(
+        m_fptr,
+        TSTRING,
+        "TIMESYS",
+        timesys,
+        "Time scale for timestamps",
         &m_status);
 
     /*
@@ -157,6 +158,14 @@ bool ContinuumFits::create(const std::string &filename,
         "Aggregated continuum",
         &m_status);
 
+    fits_update_key(
+        m_fptr,
+        TSTRING,
+        "TIMESYS",
+        timesys,
+        "Time scale for TIME",
+        &m_status);
+
     if (m_status)
     {
         fits_report_error(stderr, m_status);
@@ -179,18 +188,42 @@ bool ContinuumFits::write(uint64_t timestamp_ns,
 
     m_status = 0;
 
-    ++m_row;
+    const uint64_t start_ns = spectrum_time::integration_start_ns(
+        timestamp_ns, exposure_sec);
+    double time_mjd = spectrum_time::unix_ns_to_mjd(start_ns);
 
-    /*
-     * Unix timestamp(ns) -> MJD
-     *
-     * MJD = 40587 + Unix seconds / 86400
-     */
-    const double time_mjd =
-        UNIX_MJD +
-        static_cast<double>(timestamp_ns) /
-        NS_PER_SEC /
-        SEC_PER_DAY;
+    if (m_row == 0)
+    {
+        char date_obs[32]{};
+        if (!spectrum_time::format_fits_utc(
+                start_ns, date_obs, sizeof(date_obs)))
+            return false;
+
+        int table_hdu = 0;
+        fits_get_hdu_num(m_fptr, &table_hdu);
+        fits_movabs_hdu(m_fptr, 1, nullptr, &m_status);
+
+        m_integration_time_sec = exposure_sec;
+        fits_update_key(
+            m_fptr, TDOUBLE, "INTTIME", &m_integration_time_sec,
+            "Integration time [s]", &m_status);
+        fits_update_key(
+            m_fptr, TSTRING, "DATE-OBS", date_obs,
+            "UTC observation start", &m_status);
+        fits_update_key(
+            m_fptr, TDOUBLE, "MJD-OBS",
+            &time_mjd,
+            "UTC observation start [MJD]", &m_status);
+
+        fits_movabs_hdu(m_fptr, table_hdu, nullptr, &m_status);
+        if (m_status)
+        {
+            fits_report_error(stderr, m_status);
+            return false;
+        }
+    }
+
+    ++m_row;
 
     /*
      * TIME
