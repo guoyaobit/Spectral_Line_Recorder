@@ -36,21 +36,24 @@ int sdfits::sdfits_create()
         filename_stem.erase(filename_stem.size() - extension.size());
     }
 
-    // Continue after files left by an earlier recorder process. Reusing
-    // _0001 after a restart makes CFITSIO reject creation and stops storage.
-    int filename_length = 0;
-    do
+    // File rotation is currently disabled, so use the descriptive stem
+    // directly instead of appending a meaningless permanent "_0001".
+    filenum = 1;
+    const int filename_length = snprintf(filename, sizeof(filename),
+                                         "%s.sdfits",
+                                         filename_stem.c_str());
+    if (filename_length < 0 ||
+        static_cast<size_t>(filename_length) >= sizeof(filename))
     {
-        filenum++;
-        filename_length = snprintf(filename, sizeof(filename), "%s_%04d.sdfits",
-                                   filename_stem.c_str(), filenum);
-        if (filename_length < 0 ||
-            static_cast<size_t>(filename_length) >= sizeof(filename))
-        {
-            fprintf(stderr, "SDFITS output filename is too long.\n");
-            return 1;
-        }
-    } while (access(filename, F_OK) == 0);
+        fprintf(stderr, "SDFITS output filename is too long.\n");
+        return 1;
+    }
+    if (access(filename, F_OK) == 0)
+    {
+        fprintf(stderr, "Refusing to overwrite existing SDFITS file '%s'.\n",
+                filename);
+        return 1;
+    }
 
     // Create basic FITS file from our template
     // char *vegas_dir = getenv("VEGAS_DIR");
