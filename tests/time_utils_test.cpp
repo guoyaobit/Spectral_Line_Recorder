@@ -1,4 +1,5 @@
 #include "time_utils.h"
+#include "SpectrumTransport.hpp"
 
 #include <cmath>
 #include <cstring>
@@ -23,6 +24,10 @@ int main()
     if (std::abs(spectrum_time::unix_ns_to_mjd(start_ns) - 61222.0) >
         1.0e-10)
         return 4;
+
+    static constexpr char crc_input[] = "123456789";
+    if (spectrum_crc32c(crc_input, sizeof(crc_input) - 1) != 0xe3069283U)
+        return 5;
 
     return 0;
 }

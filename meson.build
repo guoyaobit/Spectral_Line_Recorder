@@ -9,16 +9,15 @@ project('7mm_recorder', ['c', 'cpp'],
 
 inc = include_directories('include')
 
-dpdk_dep = dependency('libdpdk', required: true)
-
 spdlog_dep = dependency('spdlog')
 yaml = dependency('yaml-cpp', required: true)
 cfitsio_dep = dependency('cfitsio', required: true)
+zmq_dep = dependency('libzmq', required: true)
 
-dpdk_lib = static_library('dpdk',
-  'src/dpdk.cpp',
+receiver_lib = static_library('zmq_receiver',
+  'src/zmq_receiver.cpp',
   include_directories: inc,
-  dependencies: dpdk_dep
+  dependencies: [cfitsio_dep, zmq_dep, spdlog_dep, yaml]
 )
 
 executable('7mm_recorder',
@@ -27,8 +26,8 @@ executable('7mm_recorder',
   'src/ContinuumFits.cpp'
   ],
   include_directories: inc,
-  dependencies:  [cfitsio_dep,yaml,spdlog_dep],
-  link_with: dpdk_lib,
+  dependencies:  [cfitsio_dep,yaml,spdlog_dep,zmq_dep],
+  link_with: receiver_lib,
 )
 
 time_utils_test = executable('time_utils_test',

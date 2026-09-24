@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
+#include <unordered_set>
 #include <vector>
 #include <memory>
 #include <thread>
@@ -125,7 +127,7 @@ public:
         printf("程序启动，日志文件: %s\n", logfile.c_str());
     }
     // default para
-    int recv_streams = 8;
+    std::vector<uint16_t> result_ports;
     int continuum_inputs = 64;
     std::string folder = "";
     std::string object = "";
@@ -151,13 +153,37 @@ public:
         try
         {
             YAML::Node config = YAML::LoadFile(filename);
-            // std::cout<<recv_streams<<std::endl;
             if (config["Debug"])
                 Debug_mode = config["Debug"].as<bool>();
             if (config["observation_mode"])
                 observation_mode = parseObservationMode(config["observation_mode"]);
-            if (config["recv_streams"])
-                recv_streams = config["recv_streams"].as<int>();
+            const YAML::Node ports = config["result_ports"];
+            if (!ports || !ports.IsSequence() || ports.size() == 0)
+            {
+                logger_->error(
+                    "result_ports must contain at least one TCP port");
+                return false;
+            }
+            result_ports.clear();
+            std::unordered_set<uint16_t> unique_ports;
+            for (const auto &node : ports)
+            {
+                const int port = node.as<int>();
+                if (port < 1 || port > 65535)
+                {
+                    logger_->error(
+                        "Invalid result port {}; valid range is 1-65535",
+                        port);
+                    return false;
+                }
+                const auto value = static_cast<uint16_t>(port);
+                if (!unique_ports.insert(value).second)
+                {
+                    logger_->error("Duplicate result port {}", port);
+                    return false;
+                }
+                result_ports.push_back(value);
+            }
             if (config["continuum_inputs"])
                 continuum_inputs = config["continuum_inputs"].as<int>();
             if (continuum_inputs <= 0 || continuum_inputs > 64)

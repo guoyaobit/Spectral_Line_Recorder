@@ -6,10 +6,26 @@ object: test
 # false/off: pointing at sky background; output names contain OFF
 source_on: true
 # source_on: false
-recv_streams: 8 
-# Number of scalar continuum results expected per integration.
-# 8 servers x 4 physical subbands x 2 beams = 64.
-# Use 16 when only two servers are enabled.
+# ZeroMQ/TCP ports on which Recorder listens. The list may contain any number
+# of unique, non-contiguous ports. Its order has no meaning: subband, beam and
+# window identities are read from spectrum_header. Multiple sender subbands
+# may therefore share one listed destination port.
+# These result TCP ports are unrelated to the FPGA input UDP ports.
+result_ports:
+  - 60000
+  - 60001
+  - 60002
+  - 60003
+  - 60004
+  - 60005
+  - 60006
+  - 60007
+# Continuum mode sends one scalar from each unique global-subband/beam input.
+# Recorder groups equal VDIF integration timestamps, rejects duplicates, and
+# writes only after this many unique inputs have arrived. It sums in double
+# precision. A missing input makes the whole integration expire without output.
+# All 8 servers: 8 x 4 physical subbands x 2 beams = 64.
+# Only 2 enabled servers: 2 x 4 x 2 = 16.
 continuum_inputs: 64
 Storage_folder: /data/
 observation_mode: 1      # Must match the sender: 1=spectral line, 2=continuum
