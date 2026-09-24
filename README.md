@@ -8,6 +8,30 @@ then automatically resume after this process starts. Each logical window has a
 send high-water mark of one, so at most one already queued result can survive a
 mid-run disconnect.
 
+## Observation directory
+
+With a system controller, set `Observation_ID` in Recorder and every processing
+node to the same value. Spectral-line and continuum modes write beneath
+`Storage_folder/<Observation_ID>/`; Recorder does not alter the ID or append a
+timestamp. The controller must write a new ID before each new observation. An
+existing directory is reused so Recorder may restart during that observation.
+The ID must contain 1-64 ASCII letters, digits, `.`, `_`, or `-`, and must not
+be `.` or `..`. Incoming messages are accepted only when the CRC32C value in
+`spectrum_header.obs_id` matches this configured ID.
+
+Without a controller, omit `Observation_ID`, leave it null, or set it to an
+empty string on both sides. Processing nodes then send `obs_id=0`; Recorder
+accepts `obs_id=0` and creates an ISO-8601 basic UTC directory containing the
+target and pointing state, for example
+`Storage_folder/20260925T143012.317Z_M87_ON/`. Unsafe target-name characters
+are normalized for use in a path. The generated folder name is local storage
+metadata and is not sent back to processing nodes.
+
+```yaml
+Observation_ID: 20260924T123015Z_M87_scan003
+Storage_folder: /data
+```
+
 ## Result ports
 
 `result_ports` is only the set of TCP endpoints on which Recorder listens. It

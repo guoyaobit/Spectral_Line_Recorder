@@ -9,6 +9,7 @@
 #include <thread>
 #include "readerwriterqueue.h"
 #include "readerwritercircularbuffer.h"
+#include <ObservationId.hpp>
 #include <yaml-cpp/yaml.h>
 #include <iostream>
 #include "spdlog/spdlog.h"
@@ -130,22 +131,15 @@ public:
     std::vector<uint16_t> result_ports;
     int continuum_inputs = 64;
     std::string folder = "";
+    std::string Observation_ID = "";
+    uint32_t Observation_numeric_id = 0;
+    bool observation_id_configured = false;
     std::string object = "";
     bool source_on = true;
     bool Debug_mode = false;
     const char *source_label() const
     {
         return source_on ? "ON" : "OFF";
-    }
-    std::string getTimeString()
-    {
-        auto now = std::chrono::system_clock::now();
-        std::time_t t = std::chrono::system_clock::to_time_t(now);
-        std::tm localTime{};
-        localtime_r(&t, &localTime);
-        std::ostringstream oss;
-        oss << std::put_time(&localTime, "%Y-%m-%d_%H-%M-%S");
-        return oss.str();
     }
     // 初始化 YAML 配置
     bool initFromYaml(const std::string &filename)
@@ -193,8 +187,45 @@ public:
                     continuum_inputs);
                 return false;
             }
-            if (config["Storage_folder"])
-                folder = config["Storage_folder"].as<std::string>();
+            if (!config["Storage_folder"] ||
+                !config["Storage_folder"].IsScalar())
+            {
+                logger_->error(
+                    "Configuration must contain scalar Storage_folder");
+                return false;
+            }
+            folder = config["Storage_folder"].as<std::string>();
+            if (folder.empty())
+            {
+                logger_->error("Storage_folder must not be empty");
+                return false;
+            }
+            const YAML::Node observation_id_node = config["Observation_ID"];
+            observation_id_configured = false;
+            Observation_numeric_id = 0;
+            if (observation_id_node && !observation_id_node.IsNull())
+            {
+                if (!observation_id_node.IsScalar())
+                {
+                    logger_->error("Observation_ID must be a scalar");
+                    return false;
+                }
+                Observation_ID = observation_id_node.as<std::string>();
+                if (!Observation_ID.empty() &&
+                    !observation_id_is_valid(Observation_ID))
+                {
+                    logger_->error(
+                        "Observation_ID must contain 1-64 ASCII letters, "
+                        "digits, '.', '_' or '-' and must not be '.' or '..'");
+                    return false;
+                }
+                if (!Observation_ID.empty())
+                {
+                    Observation_numeric_id =
+                        observation_id_numeric(Observation_ID);
+                    observation_id_configured = true;
+                }
+            }
             if(config["object"])
                 object = config["object"].as<std::string>();
             if (!config["source_on"] || !config["source_on"].IsScalar())
@@ -232,20 +263,30 @@ public:
                     source_value);
                 return false;
             }
-            const std::string time_string = getTimeString();
-
-            if (observation_mode == ObservationMode::SPECTRAL)
+            if (!observation_id_configured)
             {
-                folder += "/" +
-                        object + "_" + source_label() + "_" +
-                        time_string;
+                Observation_ID = automatic_observation_directory_id(
+                    object, source_label());
             }
-            else if (observation_mode == ObservationMode::CONTINUUM)
-            {
-                folder += "/" + object + "_" + source_label() + "_" +
-                          time_string;
-            }
-            std::filesystem::create_directories(folder);
+            // A controller-provided ID is reused exactly. In manual mode the
+            // Recorder alone generates the directory name, while processing
+            // nodes and Recorder consistently use spectrum obs_id zero.
+            const std::filesystem::path storage_root(folder);
+            std::filesystem::create_directories(storage_root);
+            const std::filesystem::path observation_folder =
+                storage_root / Observation_ID;
+            std::filesystem::create_directories(observation_folder);
+            folder = observation_folder.string();
+            if (!observation_id_configured)
+                logger_->warn(
+                    "Observation_ID is not configured; manual mode expects "
+                    "spectrum obs_id=0 and writes to {}",
+                    folder);
+            else
+                logger_->info(
+                    "Observation_ID = {} (spectrum obs_id={}); output "
+                    "directory: {}",
+                    Observation_ID, Observation_numeric_id, folder);
             logger_->info(
                 "Observation target state: {} ({})",
                 source_label(),
@@ -254,7 +295,13 @@ public:
         }
         catch (const YAML::Exception &e)
         {
-            logger_->error("YAML 配置解析失败: ", e.what());
+            logger_->error("YAML configuration error: {}", e.what());
+            return false;
+        }
+        catch (const std::exception &e)
+        {
+            logger_->error("Failed to initialize observation output: {}",
+                           e.what());
             return false;
         }
         return true;

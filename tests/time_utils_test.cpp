@@ -1,8 +1,10 @@
 #include "time_utils.h"
+#include "ObservationId.hpp"
 #include "SpectrumTransport.hpp"
 
 #include <cmath>
 #include <cstring>
+#include <string>
 
 int main()
 {
@@ -28,6 +30,23 @@ int main()
     static constexpr char crc_input[] = "123456789";
     if (spectrum_crc32c(crc_input, sizeof(crc_input) - 1) != 0xe3069283U)
         return 5;
+
+    const std::string observation_id =
+        "20260924T123015Z_M87_scan003";
+    if (!observation_id_is_valid(observation_id) ||
+        observation_id_numeric(observation_id) !=
+            spectrum_crc32c(observation_id.data(), observation_id.size()) ||
+        observation_id_is_valid("") ||
+        observation_id_is_valid("../escape") ||
+        observation_id_is_valid(std::string(65, 'a')))
+        return 6;
+
+    const std::string automatic_id =
+        automatic_observation_directory_id("M 87", "ON");
+    if (!observation_id_is_valid(automatic_id) ||
+        automatic_id.size() != 28 ||
+        automatic_id.substr(automatic_id.size() - 8) != "_M-87_ON")
+        return 7;
 
     return 0;
 }

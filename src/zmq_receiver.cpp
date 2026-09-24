@@ -618,6 +618,7 @@ bool validate_header(const spectrum_header &header, size_t payload_bytes) {
       header.version != SPECTRUM_VERSION_V2 || header.pkt_id != 0 ||
       header.total_pkt != 1 || header.subband_id > MAX_GLOBAL_SUBBAND_ID ||
       header.beam_id > 1 || header.n_channels == 0 ||
+      header.obs_id != cfg.Observation_numeric_id ||
       header.n_channels > MAX_SPECTRUM_CHANNELS ||
       !std::isfinite(header.start_freq_hz) ||
       !std::isfinite(header.channel_bw_hz) || header.channel_bw_hz <= 0.0 ||
@@ -751,9 +752,11 @@ void receive_worker(void *context, size_t receiver_index, uint16_t port,
         header.subband_id / SUBBANDS_PER_SERVER != transport.server_id) {
       cfg.logger_->warn(
           "Dropped invalid spectrum message: server={}, sequence={}, "
-          "subband={}, window={}, beam={}, payload_bytes={}",
+          "subband={}, window={}, beam={}, obs_id={}, expected_obs_id={}, "
+          "payload_bytes={}",
           transport.server_id, transport.sequence, header.subband_id,
-          header.window_id, header.beam_id, payload_bytes);
+          header.window_id, header.beam_id, header.obs_id,
+          cfg.Observation_numeric_id, payload_bytes);
       continue;
     }
 
