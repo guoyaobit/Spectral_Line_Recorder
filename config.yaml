@@ -3,7 +3,7 @@ Debug: true
 # Optional. The system controller sets the same unique value on the Recorder
 # and every GPU node. If omitted, Recorder expects spectrum obs_id=0 and writes
 # to a UTC directory such as Storage_folder/20260925T143012.317Z_M87_ON/.
-Observation_ID: 20260924T000000Z_example_scan001
+# Observation_ID: 20260924T000000Z_example_scan001
 # name of observ object
 object: test
 # true/on: pointing at the observation source; output names contain ON
