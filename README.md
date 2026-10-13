@@ -32,6 +32,32 @@ Observation_ID: 20260924T123015Z_M87_scan003
 Storage_folder: /data
 ```
 
+## Offline SDFITS ON/OFF reduction
+
+`make_class_onoff.py` combines one source ON scan and one reference OFF scan
+into a single CLASS-readable FITS spectrum. It supports exposure-normalized
+integration, XX or YY selection, noise-diode calibration, LSRK radio velocity,
+Hanning/boxcar/Gaussian smoothing, and separate Python frequency and velocity
+plots.
+
+Install the Python dependencies and inspect the command-line options with:
+
+```sh
+python -m pip install -r requirements-sdfits.txt
+python make_class_onoff.py --help
+```
+
+Recorder `OBSFREQ` values may describe the intermediate-frequency band rather
+than absolute sky frequency. Supply `--lo-mhz`, `--if-start-mhz`,
+`--if-stop-mhz`, and the correct sideband when reducing such files. Supply
+`--date-obs` in UTC when the input header does not contain the true observing
+time.
+
+The script does not perform baseline subtraction. See
+[`SDFITS_REDUCTION.md`](SDFITS_REDUCTION.md) for calibration equations,
+frequency and time metadata requirements, CLASS plotting commands, a complete
+NH3(1,1) example, and the validation checklist.
+
 ## Result ports
 
 `result_ports` is only the set of TCP endpoints on which Recorder listens. It
