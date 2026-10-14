@@ -117,3 +117,5 @@ uses 25 cores; using fewer listening ports reduces that count. If fewer cores
 are available the mapping wraps and is reported in the startup log. A systemd
 `CPUAffinity=` setting or `taskset` can restrict the CPU set from which the
 recorder automatically assigns cores.
+
+Developer: YAO GUO, Institute of Automation, Chinese Academy of Sciences.
