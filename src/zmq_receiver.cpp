@@ -6,6 +6,7 @@
 #include <Globalcfg.hpp>
 #include <SpectrumTransport.hpp>
 #include <sdfits.h>
+#include <SdfitsMetadata.hpp>
 #include <time_utils.h>
 
 #include <zmq.h>
@@ -41,7 +42,7 @@
 namespace {
 
 constexpr uint32_t SPECTRUM_MAGIC = 0x534C5231U;
-constexpr uint16_t SPECTRUM_VERSION_V2 = 2;
+constexpr uint16_t SPECTRUM_VERSION_V3 = 3;
 constexpr uint16_t MAX_GLOBAL_SUBBAND_ID = 31;
 constexpr uint32_t MAX_SPECTRUM_CHANNELS = 65536U * 256U;
 constexpr uint16_t SUBBANDS_PER_SERVER = 4;
@@ -300,8 +301,7 @@ void write_spectrum_frame(const CompletedSpectrum &result) {
       }
 
       writer.hdr.nchan = header.n_channels;
-      const uint64_t start_ns = spectrum_time::integration_start_ns(
-          header.timestamp_ns, header.exposure);
+      const uint64_t start_ns = header.integration_start_ns;
       if (!spectrum_time::format_fits_utc(start_ns, writer.hdr.date_obs,
                                           sizeof(writer.hdr.date_obs))) {
         cfg.logger_->error("Failed to format DATE-OBS for timestamp {}",
@@ -315,6 +315,8 @@ void write_spectrum_frame(const CompletedSpectrum &result) {
                            header.channel_bw_hz * header.n_channels / 2;
       writer.hdr.nsubband = 1;
       writer.hdr.npol = 4;
+      configure_sdfits_metadata(writer, cfg.sdfits_metadata, cfg.object,
+                                header.cal_mode != 0, cfg.source_on);
 
       std::unique_lock<std::mutex> cfitsio_lock(cfitsio_mutex,
                                                 std::defer_lock);
@@ -351,8 +353,7 @@ void write_spectrum_frame(const CompletedSpectrum &result) {
   writer.data_columns.integ_num = static_cast<int>(header.integration_id);
   writer.data_columns.centre_freq[0] = writer.hdr.obsfreq;
   writer.data_columns.time = spectrum_time::unix_ns_to_mjd(
-      spectrum_time::integration_start_ns(header.timestamp_ns,
-                                          header.exposure));
+      header.integration_start_ns);
   writer.data_columns.exposure = header.exposure;
   const int write_status = writer.sdfits_write_subint();
   if (write_status != 0) {
@@ -413,6 +414,7 @@ void spectrum_writer_worker(size_t index) {
 
 struct ContinuumResult {
   uint64_t timestamp_ns;
+  uint64_t integration_start_ns;
   uint32_t integration_id;
   uint16_t subband_id;
   uint8_t beam_id;
@@ -429,6 +431,7 @@ struct ContinuumQueue {
 
 struct ContinuumFrame {
   uint64_t timestamp_ns = 0;
+  uint64_t integration_start_ns = 0;
   double power = 0.0;
   uint32_t received_inputs = 0;
   std::unordered_set<uint32_t> inputs;
@@ -471,6 +474,7 @@ void accumulate_continuum(const ContinuumResult &result) {
   if (it == continuum_map.end()) {
     ContinuumFrame frame;
     frame.timestamp_ns = result.timestamp_ns;
+    frame.integration_start_ns = result.integration_start_ns;
     frame.exposure = result.exposure;
     frame.noise_state = result.noise_state;
     it = continuum_map.emplace(result.timestamp_ns, std::move(frame)).first;
@@ -478,6 +482,7 @@ void accumulate_continuum(const ContinuumResult &result) {
 
   ContinuumFrame &frame = it->second;
   if (frame.noise_state != result.noise_state ||
+      frame.integration_start_ns != result.integration_start_ns ||
       std::abs(frame.exposure - result.exposure) > 1.0e-6f) {
     cfg.logger_->error(
         "Discarded inconsistent continuum integration: timestamp={}, "
@@ -499,7 +504,7 @@ void accumulate_continuum(const ContinuumResult &result) {
   frame.power += result.power;
   ++frame.received_inputs;
   if (frame.received_inputs == static_cast<uint32_t>(cfg.continuum_inputs)) {
-    if (!continuum_fits.write(frame.timestamp_ns, frame.power, frame.exposure,
+    if (!continuum_fits.write(frame.integration_start_ns, frame.power, frame.exposure,
                               frame.noise_state)) {
       cfg.logger_->error(
           "Failed to write complete continuum integration: timestamp={}, "
@@ -615,7 +620,8 @@ struct ReceiverStartup {
 
 bool validate_header(const spectrum_header &header, size_t payload_bytes) {
   if (header.magic != SPECTRUM_MAGIC ||
-      header.version != SPECTRUM_VERSION_V2 || header.pkt_id != 0 ||
+      header.version != SPECTRUM_VERSION_V3 || header.pkt_id != 0 ||
+      header.timestamp_ns < header.integration_start_ns ||
       header.total_pkt != 1 || header.subband_id > MAX_GLOBAL_SUBBAND_ID ||
       header.beam_id > 1 || header.n_channels == 0 ||
       header.obs_id != cfg.Observation_numeric_id ||
@@ -805,7 +811,8 @@ void receive_worker(void *context, size_t receiver_index, uint16_t port,
         continue;
       }
       enqueue_continuum(ContinuumResult{
-          header.timestamp_ns, header.integration_id, header.subband_id,
+          header.timestamp_ns, header.integration_start_ns,
+          header.integration_id, header.subband_id,
           header.beam_id, power, header.exposure, header.noise_state});
     } else {
       const size_t payload_offset =

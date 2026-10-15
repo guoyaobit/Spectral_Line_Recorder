@@ -6,6 +6,7 @@
 #include <math.h>
 #include "sdfits.h"
 #include <unistd.h>
+#include <cmath>
 #define SDFITS_TEMPLATE "vegas_SDFITS_template.txt"
 
 #define DEBUGOUT 0
@@ -94,9 +95,29 @@ int sdfits::sdfits_create()
     // Update the keywords that need it
     fits_update_key(fptr, TSTRING, "TELESCOP", hdr.telescope, NULL, &status);
     fits_update_key(fptr, TDOUBLE, "BANDWID", &(hdr.bandwidth), NULL, &status);
+    // Native files contain uncalibrated accumulated power, not kelvin or Jy.
+    fits_update_key(fptr, TSTRING, "DATALAY", const_cast<char *>("PRODFAST"),
+                    "Original interleaved products; no DATA reordering", &status);
+    fits_update_key(fptr, TSTRING, "TUNIT20", const_cast<char *>("count"),
+                    "Uncalibrated accumulated power", &status);
+    fits_update_key(fptr, TSTRING, "CALSTAT", const_cast<char *>("UNCALIBRATED"), NULL, &status);
+    fits_update_key(fptr, TSTRING, "SRCSTATE",
+                    const_cast<char *>(hdr.source_on ? "ON" : "OFF"), NULL, &status);
+    fits_update_key_null(fptr, "TCAL", "Unknown effective diode temperature [K]", &status);
+    fits_update_key(fptr, TSTRING, "FREQTYPE", const_cast<char *>("IF"),
+                    "Backend IF frequencies; RF requires LO and sideband", &status);
+    if (std::isfinite(hdr.site_lon))
+        fits_update_key(fptr, TDOUBLE, "SITELONG", &hdr.site_lon, NULL, &status);
+    if (std::isfinite(hdr.site_lat))
+        fits_update_key(fptr, TDOUBLE, "SITELAT", &hdr.site_lat, NULL, &status);
+    if (std::isfinite(hdr.site_height))
+        fits_update_key(fptr, TDOUBLE, "SITEELEV", &hdr.site_height, NULL, &status);
     fits_update_key(fptr, TSTRING, "DATE-OBS", hdr.date_obs, NULL, &status);
     fits_update_key(fptr, TDOUBLE, "MJD-OBS", &(hdr.sttmjd), NULL, &status);
-    fits_update_key(fptr, TDOUBLE, "TSYS", &(hdr.tsys), NULL, &status);
+    if (std::isfinite(hdr.tsys))
+        fits_update_key(fptr, TDOUBLE, "TSYS", &(hdr.tsys), NULL, &status);
+    else
+        fits_update_key_null(fptr, "TSYS", "Unknown; no temperature calibration applied", &status);
 
     fits_update_key(fptr, TSTRING, "PROJID", hdr.projid, NULL, &status);
     fits_update_key(fptr, TSTRING, "FRONTEND", hdr.frontend, NULL, &status);
@@ -107,8 +128,8 @@ int sdfits::sdfits_create()
     fits_update_key(fptr, TSTRING, "CAL_MODE", hdr.cal_mode, NULL, &status);
     if (strcmp("OFF", hdr.cal_mode) != 0)
     {
-        fits_update_key(fptr, TDOUBLE, "CAL_FREQ", &(hdr.cal_freq), NULL, &status);
-        fits_update_key(fptr, TDOUBLE, "CAL_DCYC", &(hdr.cal_dcyc), NULL, &status);
+        fits_update_key_null(fptr, "CAL_FREQ", "Switch frequency not supplied [Hz]", &status);
+        fits_update_key_null(fptr, "CAL_DCYC", "Duty fraction not supplied", &status);
         fits_update_key(fptr, TDOUBLE, "CAL_PHS", &(hdr.cal_phs), NULL, &status);
     }
     fits_update_key(fptr, TINT, "NPOL", &(hdr.npol), NULL, &status);
@@ -143,7 +164,7 @@ int sdfits::sdfits_create()
     /* 更新 TDIM<colnum>，使用 hdr.npol */
     char tdim_key[32], tdim_val[64];
     snprintf(tdim_key, sizeof(tdim_key), "TDIM%d", data_col);
-    snprintf(tdim_val, sizeof(tdim_val), "(%d,%d,%d,1,1)", hdr.nchan, hdr.nsubband, hdr.npol);
+    snprintf(tdim_val, sizeof(tdim_val), "(%d,%d,%d,1,1)", hdr.npol, hdr.nsubband, hdr.nchan);
     fits_update_key(fptr, TSTRING, tdim_key, tdim_val, NULL, &status);
 
 
@@ -183,7 +204,9 @@ int sdfits::sdfits_write_subint()
     row = rownum;
     temp_str = data_columns.object;
     temp_dbl = 0.0;
-    data_columns.centre_freq_idx++;
+    // Fixed first-channel reference, independent of row/integration number.
+    data_columns.centre_freq_idx = 1.0f;
+    temp_dbl = hdr.obsfreq - 0.5 * hdr.nchan * hdr.chan_bw;
     // data_columns.integ_num = ;
     fits_write_col(fptr, TDOUBLE, 1, row, 1, 1, &(data_columns.time), &status);
     fits_write_col(fptr, TINT, 2, row, 1, 1, &(data_columns.time_counter), &status);

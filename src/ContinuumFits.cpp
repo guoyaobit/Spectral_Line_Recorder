@@ -178,7 +178,7 @@ bool ContinuumFits::create(const std::string &filename,
     return m_status == 0;
 }
 
-bool ContinuumFits::write(uint64_t timestamp_ns,
+bool ContinuumFits::write(uint64_t start_ns,
                           double total_power,
                           double exposure_sec,
                           int noise_state)
@@ -188,8 +188,6 @@ bool ContinuumFits::write(uint64_t timestamp_ns,
 
     m_status = 0;
 
-    const uint64_t start_ns = spectrum_time::integration_start_ns(
-        timestamp_ns, exposure_sec);
     double time_mjd = spectrum_time::unix_ns_to_mjd(start_ns);
 
     if (m_row == 0)

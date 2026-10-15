@@ -24,7 +24,7 @@
 #pragma pack(push, 1)
 typedef struct {
   uint32_t magic ;//= 0x534C5231; // "SLR1"
-  uint16_t version = 2;
+  uint16_t version = 3;
   // UTC integration center time
   // Unix epoch nanoseconds
   uint64_t timestamp_ns;
@@ -56,11 +56,12 @@ typedef struct {
   double dec; // rad
   // data quality
   uint32_t flags; // overflow/dropout/etc
+  uint64_t integration_start_ns = 0;
 } spectrum_header;
 #pragma pack(pop)
 
-static_assert(sizeof(spectrum_header) == 95,
-              "spectrum_header protocol size must remain 95 bytes");
+static_assert(sizeof(spectrum_header) == 103,
+              "spectrum_header v3 protocol size must remain 103 bytes");
 static_assert(offsetof(spectrum_header, beam_id) == 73,
               "spectrum_header beam_id offset must remain stable");
 enum class ObservationMode : uint8_t {
@@ -135,6 +136,7 @@ public:
     uint32_t Observation_numeric_id = 0;
     bool observation_id_configured = false;
     std::string object = "";
+    YAML::Node sdfits_metadata;
     bool source_on = true;
     bool Debug_mode = false;
     const char *source_label() const
@@ -147,6 +149,7 @@ public:
         try
         {
             YAML::Node config = YAML::LoadFile(filename);
+            sdfits_metadata = config["sdfits_metadata"];
             if (config["Debug"])
                 Debug_mode = config["Debug"].as<bool>();
             if (config["observation_mode"])

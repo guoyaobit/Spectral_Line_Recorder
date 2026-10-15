@@ -4,12 +4,18 @@ Debug: true
 # and every GPU node. If omitted, Recorder expects spectrum obs_id=0 and writes
 # to a UTC directory such as Storage_folder/20260925T143012.317Z_M87_ON/.
 # Observation_ID: 20260924T000000Z_example_scan001
-# name of observ object
-object: test
-# true/on: pointing at the observation source; output names contain ON
-# false/off: pointing at sky background; output names contain OFF
-source_on: true
-# source_on: false
+# Shared SDFITS scan metadata; use the same keys on processing nodes and Recorder.
+object: test                 # OBJECT column
+source_on: true              # SRCSTATE: ON=true, OFF=false; also used in filenames
+sdfits_metadata:
+  telescope: NSRT            # TELESCOP
+  instrument: 7mm            # INSTRUME
+  # Actual ICRS pointing in degrees; OFF scans need their actual pointing.
+  # ra_deg: 9.1979583333      # CRVAL4
+  # dec_deg: 63.4839166667    # CRVAL5
+  # site_lon_deg: 87.10      # SITELONG, east-positive degrees
+  # site_lat_deg: 43.28      # SITELAT, degrees
+  # site_height_m: 2029.38   # SITEELEV, metres
 # ZeroMQ/TCP ports on which Recorder listens. The list may contain any number
 # of unique, non-contiguous ports. Its order has no meaning: subband, beam and
 # window identities are read from spectrum_header. Multiple sender subbands

@@ -14,7 +14,8 @@ public:
     bool create(const std::string &filename,
                 double integration_time_sec);
 
-    bool write(uint64_t timestamp_ns,
+    // Explicit integration start, not centre minus half the live exposure.
+    bool write(uint64_t start_ns,
                double total_power,
                double exposure_sec,
                int noise_state);

@@ -5,6 +5,7 @@
 #include <string>
 #include <cstring>
 #include <iostream>
+#include <limits>
 
 // The following is the max file length in GB
 // #define SDFITS_MAXFILELEN 1L
@@ -58,6 +59,10 @@ public:
     double hwexposr; // Duration of fixed integration on FPGA/GPU [s]
     double filtnep;  // PFB filter noise-equivalent parameter
     double sttmjd;   // Observation start time [double MJD]
+    double site_lon = std::numeric_limits<double>::quiet_NaN();
+    double site_lat = std::numeric_limits<double>::quiet_NaN();
+    double site_height = std::numeric_limits<double>::quiet_NaN();
+    bool source_on = true;
     
 public:
     HdrInfo()
@@ -71,7 +76,7 @@ public:
 
         bandwidth = 0.0;
         freqres = 0.0;
-        tsys = 0.0;
+        tsys = std::numeric_limits<double>::quiet_NaN();
         obsfreq = 0.0;
         scan = 0.0;
         cal_freq = 0.0;
@@ -159,6 +164,7 @@ public:
           ,cal_on(0), cal_phase(0.0)
     {
         std::memset(object, 0, sizeof(object));
+        ra = dec = std::numeric_limits<double>::quiet_NaN();
         std::memset(data_len, 0, sizeof(data_len));
         std::memset(data_dims, 0, sizeof(data_dims));
         std::memset(centre_freq, 0, sizeof(centre_freq));

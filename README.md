@@ -104,11 +104,19 @@ must belong to a kernel-managed interface, such as the 100G SR-IOV VF used by
 the processing servers. Allow every configured `result_ports` value through
 the host firewall.
 
-Each message contains a 24-byte transport envelope, the unchanged 95-byte
+Each message contains a 24-byte transport envelope and a 103-byte version-3
 `spectrum_header`, and one complete result payload. The receiver checks the
 server/subband mapping, payload size, sequence number, and CRC32C before a
 result can enter a Writer queue. A full Writer queue drops the complete result
 and records the drop; partial SDFITS rows are never written.
+
+Version 3 adds an explicit PFB-corrected integration start timestamp.
+The existing centre timestamp calculation is retained.
+`EXPOSURE` remains the accumulated live time; blanked periods
+and the other noise state are excluded. SDFITS `TIME` and the initial
+`DATE-OBS`/`MJD-OBS`/`STTMJD` use the explicit start, even when a calibration
+integration spans several switching cycles. Continuum output uses the same
+explicit start. Sender and Recorder must be upgraded together; v2 is rejected.
 
 On Linux the recorder reads its allowed process CPU mask and assigns separate
 cores to the main thread, the ZeroMQ I/O pool, each configured PULL endpoint,
@@ -117,5 +125,29 @@ uses 25 cores; using fewer listening ports reduces that count. If fewer cores
 are available the mapping wraps and is reported in the startup log. A systemd
 `CPUAffinity=` setting or `taskset` can restrict the CPU set from which the
 recorder automatically assigns cores.
+
+## Shared SDFITS metadata configuration
+
+Use the same scan and header keys on processing nodes and Recorder:
+
+```yaml
+object: test
+source_on: true
+sdfits_metadata:
+  telescope: NSRT
+  instrument: 7mm
+  # ra_deg: actual ICRS right ascension in degrees
+  # dec_deg: actual ICRS declination in degrees
+  # site_lon_deg: surveyed east-positive longitude in degrees
+  # site_lat_deg: surveyed latitude in degrees
+  # site_height_m: surveyed elevation in metres
+```
+
+`object` populates OBJECT. `source_on` populates SRCSTATE and the ON/OFF
+filename component. Telescope/instrument populate TELESCOP/INSTRUME;
+coordinates populate CRVAL4/CRVAL5 and SITELONG/SITELAT/SITEELEV.
+Unknown coordinates must be omitted. These settings do not calibrate power
+or convert IF to sky frequency. Raw SDFITS is reduced with the existing
+ON/OFF script before CLASS import.
 
 Developer: YAO GUO, Institute of Automation, Chinese Academy of Sciences.

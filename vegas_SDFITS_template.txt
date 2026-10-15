@@ -42,10 +42,7 @@ TSYS    =                    * / System temperature
 #
 PROJID  = '                '   / Project name
 FRONTEND= '                '   / Rx and feed ID
-OBSFREQ =                    * / [MHz] Centre frequency for observation
-SITELONG= 38.432842            / Antenna longitude (degrees, float)
-SITELAT = -79.839411           / Antenna latitude (degrees, float)
-SITEELEV= 807.43               / Antenna elevation (metres, float)
+OBSFREQ =                    * / [Hz] Backend band centre
 EQUINOX = 2000.0               / Equinox of coords (e.g. 2000.0) 
 SCAN    =                    * / Scan number (float)
 #
@@ -81,12 +78,15 @@ STTMJD  =                    * / Observation start time [double MJD]
 #
 TTYPE#  = 'TIME    '           / MJD at start of integration (usec resolution)
 TFORM#  = '1D      '           / 8-byte real 
+TUNIT#  = 'd'                 / Absolute UTC MJD; MJDREF=0
+MJDREF  =                  0.0 / TIME reference MJD
 TTYPE#  = 'TIMECNTR'           / FPGA time counter at start of integration
 TFORM#  = '1J      '           / 32-bit integer 
 TTYPE#  = 'INTEGNUM'           / Indicates the integration interval
 TFORM#  = '1J      '           / 32-bit integer 
 TTYPE#  = 'EXPOSURE'           / Effective integration time (seconds)
 TFORM#  = '1E      '           / 4-byte real 
+TUNIT#  = 's'
 TTYPE#  = 'OBJECT  '           / Object being viewed
 TFORM#  = '16A     '           / 16 characters
 TTYPE#  = 'AZIMUTH '           / Commanded azimuth (degrees, float)
@@ -113,25 +113,31 @@ TFORM#  = 'D       '           / 8-byte real (* number of sub-bands)
 #
 ### The data array axes ###
 #
-CTYPE1  = 'FREQ    '           / DATA ARRAY AXIS 1: frequency in Hz.            
-TTYPE#  = 'CRPIX1  '           / Channel num. of centre of spectral bin                              
+CTYPE3  = 'FREQ    '           / DATA axis 3: frequency; products vary fastest
+TTYPE#  = 'CRPIX3  '           / Reference frequency channel
 TFORM#  = '1E      '           / 4-byte real                              
-TTYPE#  = 'CRVAL1  '           / Freq at centre of sub-band (always 0Hz)                              
+TTYPE#  = 'CRVAL3  '           / First channel centre in Hz
 TFORM#  = '1D      '           / 8-byte real                               
 TUNIT#  = 'Hz      '           / Units is Hz                                 
-TTYPE#  = 'CDELT1  '           / Width of each spectral channel                               
+TTYPE#  = 'CDELT3  '           / Frequency increment per channel
 TFORM#  = '1D      '           / 8-byte real                                
 TUNIT#  = 'Hz      '           / Units is Hz    
 #
 CTYPE2  = 'SUBBAND '           / DATA ARRAY AXIS 2: Sub-bands          
-CRPIX1  =                  1.0 / Reference pixel
-CRVAL1  =                  0.0 / Sub-band number for reference pixel
-CDELT1  =                  1.0 / Sub-band axis increment               
+CRPIX2  =                  1.0 / Reference pixel
+CRVAL2  =                  0.0 / Sub-band number for reference pixel
+CDELT2  =                  1.0 / Sub-band axis increment
 #                            
-CTYPE3  = 'STOKES  '           / DATA ARRAY AXIS 3: Stokes polarisation          
-CRPIX3  =                  1.0 / Polarization code reference pixel
-CRVAL3  =                 -5.0 / Polarization code at reference pixel (XX)
-CDELT3  =                 -1.0 / Polarization code axis increment               
+CTYPE1  = 'CORRPROD'           / DATA axis 1: backend products, not full Stokes
+CRPIX1  =                  1.0 / Product reference pixel
+CRVAL1  =                  1.0 / Product index at reference pixel
+CDELT1  =                  1.0 / Product index increment
+POLPROD1= 'XX'                / X auto-power
+POLPROD2= 'YY'                / Y auto-power
+POLPROD3= 'XR_YI'             / Re(X) times Im(Y)
+POLPROD4= 'XI_YR'             / Im(X) times Re(Y)
+CUNIT3  = 'Hz'
+RADESYS = 'ICRS'
 #
 CTYPE4  = 'RA      '           / DATA ARRAY AXIS 4: RA mid-integration (degenerate)         
 CRPIX4  =                  1.0 / RA reference pixel
