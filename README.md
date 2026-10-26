@@ -58,6 +58,61 @@ The script does not perform baseline subtraction. See
 frequency and time metadata requirements, CLASS plotting commands, a complete
 NH3(1,1) example, and the validation checklist.
 
+## Manage with systemd
+
+The supplied unit runs Recorder as the dedicated `spectral-recorder` account.
+It does not require root or DPDK access. After building, install the runtime
+files from the repository root (these commands are for a fresh installation):
+
+```sh
+sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin spectral-recorder
+sudo install -d -o root -g spectral-recorder -m 0770 /opt/Spectral_Line_Recorder
+sudo install -d -o root -g spectral-recorder -m 0750 /opt/Spectral_Line_Recorder/build
+sudo install -m 0755 build/7mm_recorder /opt/Spectral_Line_Recorder/build/7mm_recorder
+sudo install -o root -g spectral-recorder -m 0640 config.yaml vegas_SDFITS_template.txt /opt/Spectral_Line_Recorder/
+sudo install -m 0644 systemd/spectral-line-recorder.service /etc/systemd/system/
+sudo systemctl daemon-reload
+```
+
+Skip account creation if it already exists. On upgrades, stop the service
+before replacing the executable, and preserve the deployed `config.yaml`.
+The working directory must remain the installation directory: Recorder reads
+both configuration and the FITS template there, and writes `log_*.log` there.
+The directory group therefore needs write permission.
+
+Before starting, edit `/opt/Spectral_Line_Recorder/config.yaml`, verify the
+storage mount, and grant the service account write/search access to the chosen
+`Storage_folder`. For a new, dedicated output directory, for example:
+
+```sh
+sudo install -d -o spectral-recorder -g spectral-recorder -m 0750 /data/recorder
+sudo -u spectral-recorder test -w /data/recorder
+```
+
+Set `Storage_folder: /data/recorder` for that example; the default remains `/data`.
+Do not recursively change ownership of existing observation data. Update the
+unit's `RequiresMountsFor` with `systemctl edit` if storage is on another mount.
+Ports below 1024 require additional privileges; the default ports do not.
+
+```sh
+sudo systemctl start spectral-line-recorder
+sudo systemctl status spectral-line-recorder --no-pager -l
+sudo journalctl -u spectral-line-recorder -f
+sudo systemctl stop spectral-line-recorder
+```
+
+The unit deliberately uses `Restart=no`: a crash must remain visible, and an
+unattended restart must not start a new manual observation. Boot startup is
+opt-in with `sudo systemctl enable spectral-line-recorder`; it is not enabled
+by installation. Configuration changes require stopping and starting the
+service. Recorder and a manually started copy must not run on the same ports.
+
+There is currently no graceful signal shutdown/queue-draining implementation.
+`systemctl stop` sends SIGTERM; queued results may be lost. Stop upstream
+senders first and allow pending writes to finish before stopping Recorder.
+This is not a guarantee that all queued rows have been saved. Check output
+files after an interrupted observation. `restart` has the same limitation.
+
 ## Result ports
 
 `result_ports` is only the set of TCP endpoints on which Recorder listens. It
