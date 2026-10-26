@@ -60,39 +60,36 @@ NH3(1,1) example, and the validation checklist.
 
 ## Manage with systemd
 
-The supplied unit runs Recorder as the dedicated `spectral-recorder` account.
-It does not require root or DPDK access. After building, install the runtime
-files from the repository root (these commands are for a fresh installation):
+The supplied system service uses systemd's default root account; no new user
+or group is required. After building, install the runtime files from the
+repository root (these commands are for a fresh installation):
 
 ```sh
-sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin spectral-recorder
-sudo install -d -o root -g spectral-recorder -m 0770 /opt/Spectral_Line_Recorder
-sudo install -d -o root -g spectral-recorder -m 0750 /opt/Spectral_Line_Recorder/build
+sudo install -d -m 0755 /opt/Spectral_Line_Recorder/build
 sudo install -m 0755 build/7mm_recorder /opt/Spectral_Line_Recorder/build/7mm_recorder
-sudo install -o root -g spectral-recorder -m 0640 config.yaml vegas_SDFITS_template.txt /opt/Spectral_Line_Recorder/
+sudo install -m 0640 config.yaml vegas_SDFITS_template.txt /opt/Spectral_Line_Recorder/
 sudo install -m 0644 systemd/spectral-line-recorder.service /etc/systemd/system/
 sudo systemctl daemon-reload
 ```
 
-Skip account creation if it already exists. On upgrades, stop the service
-before replacing the executable, and preserve the deployed `config.yaml`.
+On upgrades, stop the service before replacing the executable, and preserve
+the deployed `config.yaml`.
 The working directory must remain the installation directory: Recorder reads
 both configuration and the FITS template there, and writes `log_*.log` there.
-The directory group therefore needs write permission.
 
-Before starting, edit `/opt/Spectral_Line_Recorder/config.yaml`, verify the
-storage mount, and grant the service account write/search access to the chosen
-`Storage_folder`. For a new, dedicated output directory, for example:
+Before starting, edit `/opt/Spectral_Line_Recorder/config.yaml` and verify that
+`Storage_folder` (default `/data`) is mounted and writable by root. No account
+creation or ownership changes are needed. Root may still be restricted by
+network filesystem permissions such as NFS root squashing. Update the unit's
+`RequiresMountsFor` with `systemctl edit` if storage is on another mount.
+
+After updating the unit on an existing installation, reinstall it and reload:
 
 ```sh
-sudo install -d -o spectral-recorder -g spectral-recorder -m 0750 /data/recorder
-sudo -u spectral-recorder test -w /data/recorder
+sudo install -m 0644 systemd/spectral-line-recorder.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl reset-failed spectral-line-recorder
 ```
-
-Set `Storage_folder: /data/recorder` for that example; the default remains `/data`.
-Do not recursively change ownership of existing observation data. Update the
-unit's `RequiresMountsFor` with `systemctl edit` if storage is on another mount.
-Ports below 1024 require additional privileges; the default ports do not.
 
 ```sh
 sudo systemctl start spectral-line-recorder

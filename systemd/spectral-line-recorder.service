@@ -6,11 +6,7 @@ RequiresMountsFor=/opt/Spectral_Line_Recorder /data
 
 [Service]
 Type=simple
-User=spectral-recorder
-Group=spectral-recorder
 WorkingDirectory=/opt/Spectral_Line_Recorder
-ExecStartPre=/usr/bin/test -r /opt/Spectral_Line_Recorder/config.yaml
-ExecStartPre=/usr/bin/test -r /opt/Spectral_Line_Recorder/vegas_SDFITS_template.txt
 ExecStart=/opt/Spectral_Line_Recorder/build/7mm_recorder
 StandardOutput=journal
 StandardError=journal
