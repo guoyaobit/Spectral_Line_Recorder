@@ -47,9 +47,10 @@ python -m pip install -r requirements-sdfits.txt
 python make_class_onoff.py --help
 ```
 
-Recorder `OBSFREQ` values may describe the intermediate-frequency band rather
-than absolute sky frequency. Supply `--lo-mhz`, `--if-start-mhz`,
-`--if-stop-mhz`, and the correct sideband when reducing such files. Supply
+New files use `FREQTYPE=RF`: processing nodes must supply radio frequencies,
+which Recorder stores without LO or sideband conversion. Do not add the LO
+again when reducing these files. For historical IF files only, supply
+`--lo-mhz`, `--if-start-mhz`, `--if-stop-mhz`, and the correct sideband. Supply
 `--date-obs` in UTC when the input header does not contain the true observing
 time.
 
@@ -199,7 +200,7 @@ sdfits_metadata:
 filename component. Telescope/instrument populate TELESCOP/INSTRUME;
 coordinates populate CRVAL4/CRVAL5 and SITELONG/SITELAT/SITEELEV.
 Unknown coordinates must be omitted. These settings do not calibrate power
-or convert IF to sky frequency. Raw SDFITS is reduced with the existing
+or convert frequencies; new files expect RF values from the sender. Raw SDFITS is reduced with the existing
 ON/OFF script before CLASS import.
 
 Developer: YAO GUO, Institute of Automation, Chinese Academy of Sciences.

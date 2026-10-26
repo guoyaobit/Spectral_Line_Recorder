@@ -104,8 +104,8 @@ int sdfits::sdfits_create()
     fits_update_key(fptr, TSTRING, "SRCSTATE",
                     const_cast<char *>(hdr.source_on ? "ON" : "OFF"), NULL, &status);
     fits_update_key_null(fptr, "TCAL", "Unknown effective diode temperature [K]", &status);
-    fits_update_key(fptr, TSTRING, "FREQTYPE", const_cast<char *>("IF"),
-                    "Backend IF frequencies; RF requires LO and sideband", &status);
+    fits_update_key(fptr, TSTRING, "FREQTYPE", const_cast<char *>("RF"),
+                    "Radio frequencies configured by the processing node", &status);
     if (std::isfinite(hdr.site_lon))
         fits_update_key(fptr, TDOUBLE, "SITELONG", &hdr.site_lon, NULL, &status);
     if (std::isfinite(hdr.site_lat))
