@@ -41,9 +41,12 @@ result is the dimensionless position-switch ratio
 
 ## Frequency and time metadata
 
-Recorder files may store an intermediate-frequency centre in `OBSFREQ` rather
-than an absolute sky frequency. In that case, supply the receiver setup
-explicitly:
+New files use `FREQTYPE=RF`, with frequency values supplied by processing nodes
+in Hz. Read their frequency metadata directly; do not supply LO/IF overrides
+or add the LO a second time. The script does not use `FREQTYPE` to automatically
+convert frequencies.
+
+For historical IF files only, supply the actual receiver setup explicitly:
 
 ```sh
 --lo-mhz LO --if-start-mhz IF_START --if-stop-mhz IF_STOP
@@ -54,10 +57,26 @@ For the default upper sideband, sky frequency is `LO + IF`. Use
 the IF limits are treated as band edges; use `--if-reference centers` only if
 the supplied limits are the first and last channel centres.
 
-Directory timestamps are not read as observation metadata. `--date-obs` must
-be the true UTC start time. Convert local observing times to UTC before passing
-them to the script. The midpoint used for the LSRK correction is derived from
-the UTC start time and accumulated exposure.
+Native files store the actual first channel centre in row `CRVAL3` with
+`CRPIX3=1`, while `OBSFREQ` is the configured band midpoint. Keep the script's
+default `--obsfreq-reference band-center` for this project's files:
+`f[k] = OBSFREQ + (k - NCHAN/2) * CHAN_BW`. Use
+`--obsfreq-reference middle-channels` only for external files whose OBSFREQ
+is the midpoint of the first and last channel centres. Choosing the wrong
+convention introduces a half-channel offset.
+
+Directory timestamps are not read as observation metadata. When supplied,
+`--date-obs` must be the true UTC start time; convert local observing times
+to UTC first. Otherwise the script uses the earliest valid NOISE=0 row time.
+For LSRK it estimates the ON-scan midpoint from the earliest row start and the
+latest row start plus that row's exposure. If `--date-obs` is supplied, the
+same estimated span is anchored at that time; total exposure is a fallback
+only when row times are unavailable.
+
+Row exposure is live integration time, not necessarily elapsed wall time.
+For noise-switch integrations spanning gaps, the estimated end and midpoint
+can therefore be inaccurate. Confirm the actual observing interval separately
+when the LSRK correction requires higher time precision.
 
 Astropy's bundled IERS table is used in offline mode. Refresh the local Astropy
 IERS data before precision reductions when a newer Earth-orientation solution
@@ -156,11 +175,13 @@ plot
 hardcopy output_velocity_frequency.png /device png white /overwrite
 ```
 
-## Example: NH3(1,1), YY, noise diode
+## Historical IF example: NH3(1,1), YY, noise diode
 
 The following example uses an upper-sideband LO of 23294.4955 MHz. The
 NH3(1,1) rest frequency 23694.4955 MHz corresponds to IF 400 MHz and therefore
-falls in the 384-640 MHz recorder window.
+falls in the 384-640 MHz IF recorder window. This is a historical setup,
+not the supplied 29984-38080 MHz RF allocation. Do not apply its LO/IF override
+to a new RF file.
 
 ```powershell
 C:/ProgramData/miniconda3/python.exe make_class_onoff.py `
@@ -181,7 +202,8 @@ C:/ProgramData/miniconda3/python.exe make_class_onoff.py `
 Before accepting a reduction, verify:
 
 1. ON and OFF frequency axes are identical.
-2. The supplied LO, sideband, and IF limits place the line in the recorded band.
+2. For RF files, the line is in the configured RF band and no LO is added.
+   For historical IF files, the actual LO, sideband and IF limits are supplied.
 3. `--date-obs` is UTC and the source coordinates use the intended frame.
 4. Only physically connected polarization products are selected.
 5. Noise-diode states have adequate and comparable integration time.

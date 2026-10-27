@@ -8,6 +8,21 @@ then automatically resume after this process starts. Each logical window has a
 send high-water mark of one, so at most one already queued result can survive a
 mid-run disconnect.
 
+## Current data format
+
+Processing nodes supply RF frequencies in Hz; new files use `FREQTYPE=RF`.
+Recorder does not apply an LO or sideband conversion. Its current spectral
+payload is four accumulated products per channel: XX, YY, Re(X)*Im(Y),
+Im(X)*Re(Y), not full Stokes I/Q/U/V. There is no selectable `output_type`.
+The 103-byte spectrum header remains version 3.
+
+Native SDFITS keeps products fastest in DATA, with
+`TDIM=(NPOL,NSUBBAND,NCHAN,1,1)`, `CTYPE1=CORRPROD`, and the first RF channel
+centre in row `CRVAL3` (`CRPIX3=1`). Raw power is not in kelvin or Jy.
+See [SDFITS_REDUCTION.md](SDFITS_REDUCTION.md) for calibration and the
+`--obsfreq-reference band-center` frequency convention. Historical IF files
+need their actual receiver setup; the RF label change does not rewrite old files.
+
 ## Observation directory
 
 With a system controller, set `Observation_ID` in Recorder and every processing
@@ -147,7 +162,6 @@ On Debian or Ubuntu install the build dependencies, including ZeroMQ:
 ```sh
 sudo apt install build-essential meson ninja-build pkg-config \
   libcfitsio-dev libspdlog-dev libyaml-cpp-dev libzmq3-dev
-rm -rf build
 meson setup build --buildtype=release
 ninja -C build
 ```
@@ -156,6 +170,10 @@ The result transport no longer requires a DPDK-bound NIC. The storage address
 must belong to a kernel-managed interface, such as the 100G SR-IOV VF used by
 the processing servers. Allow every configured `result_ports` value through
 the host firewall.
+
+For an existing Meson build directory, use `meson setup --reconfigure build`
+before rebuilding when needed. Rebuild after writer source changes; updating
+configuration or the service unit alone does not update an installed binary.
 
 Each message contains a 24-byte transport envelope and a 103-byte version-3
 `spectrum_header`, and one complete result payload. The receiver checks the
@@ -200,7 +218,7 @@ sdfits_metadata:
 filename component. Telescope/instrument populate TELESCOP/INSTRUME;
 coordinates populate CRVAL4/CRVAL5 and SITELONG/SITELAT/SITEELEV.
 Unknown coordinates must be omitted. These settings do not calibrate power
-or convert frequencies; new files expect RF values from the sender. Raw SDFITS is reduced with the existing
-ON/OFF script before CLASS import.
+or convert frequencies; new files expect RF values from the sender. Raw SDFITS
+is reduced with the existing ON/OFF script before CLASS import.
 
 Developer: YAO GUO, Institute of Automation, Chinese Academy of Sciences.
