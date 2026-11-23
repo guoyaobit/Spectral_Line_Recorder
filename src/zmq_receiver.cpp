@@ -762,7 +762,7 @@ void receive_worker(void *context, size_t receiver_index, uint16_t port,
     if (transport.magic != SPECTRUM_TRANSPORT_MAGIC ||
         transport.version != SPECTRUM_TRANSPORT_VERSION ||
         transport.server_id > 7 || transport.message_bytes != body_bytes ||
-        spectrum_crc32c(body, body_bytes) != transport.crc32c) {
+        transport.reserved != 0) {
       static std::atomic<uint64_t> invalid_transport{0};
       const uint64_t count = invalid_transport.fetch_add(1) + 1;
       if (count == 1 || (count & (count - 1)) == 0)

@@ -5,7 +5,7 @@
 #include <cstdint>
 
 constexpr uint32_t SPECTRUM_TRANSPORT_MAGIC = 0x534C5A31U; // "SLZ1"
-constexpr uint16_t SPECTRUM_TRANSPORT_VERSION = 1;
+constexpr uint16_t SPECTRUM_TRANSPORT_VERSION = 2;
 
 #pragma pack(push, 1)
 struct spectrum_transport_header {
@@ -14,13 +14,14 @@ struct spectrum_transport_header {
   uint16_t server_id = 0;
   uint64_t sequence = 0;
   uint32_t message_bytes = 0;
-  uint32_t crc32c = 0;
+  uint32_t reserved = 0; // No message checksum in transport version 2.
 };
 #pragma pack(pop)
 
 static_assert(sizeof(spectrum_transport_header) == 24,
               "spectrum transport header must remain 24 bytes");
 
+// Used only to derive the stable numeric Observation_ID, not for message payloads.
 inline uint32_t spectrum_crc32c(const void *data, size_t length) {
   static const std::array<uint32_t, 256> table = [] {
     std::array<uint32_t, 256> result{};

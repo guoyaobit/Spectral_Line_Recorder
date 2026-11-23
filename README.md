@@ -177,9 +177,11 @@ For an existing Meson build directory, use `meson setup --reconfigure build`
 before rebuilding when needed. Rebuild after writer source changes; updating
 configuration or the service unit alone does not update an installed binary.
 
+Transport version 2 removes message CRC32C calculation and validation. Update the sender and Recorder together; transport version 1 is rejected. The one-time Observation_ID hash is unchanged.
+
 Each message contains a 24-byte transport envelope and a 103-byte version-3
 `spectrum_header`, and one complete result payload. The receiver checks the
-server/subband mapping, payload size, sequence number, and CRC32C before a
+transport version, reserved field, server/subband mapping, payload size, and sequence number before a
 result can enter a Writer queue. A full Writer queue drops the complete result
 and records the drop; partial SDFITS rows are never written.
 
