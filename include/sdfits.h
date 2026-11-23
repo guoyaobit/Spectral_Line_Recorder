@@ -7,6 +7,8 @@
 #include <iostream>
 #include <limits>
 
+inline constexpr int SDFITS_OUTPUT_EXISTS = -1;
+
 // The following is the max file length in GB
 // #define SDFITS_MAXFILELEN 1L
 

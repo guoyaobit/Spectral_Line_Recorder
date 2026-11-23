@@ -16,14 +16,6 @@ int sdfits::sdfits_create()
     int itmp;
     char ctmp[40];
 
-    // Initialize the key variables if needed
-    if (new_file == 1)
-    {
-        // GlobalConfig creates the observation directory once during startup.
-        // Running a shell for every output file caused a large startup stall
-        // when all processing servers began sending at the same time.
-        new_file = 0;
-    }
     rownum = 1;
 
     // basefilename is a stem. Be tolerant of older callers that included the
@@ -37,11 +29,8 @@ int sdfits::sdfits_create()
         filename_stem.erase(filename_stem.size() - extension.size());
     }
 
-    // File rotation is currently disabled, so use the descriptive stem
-    // directly instead of appending a meaningless permanent "_0001".
     filenum = 1;
-    const int filename_length = snprintf(filename, sizeof(filename),
-                                         "%s.sdfits",
+    const int filename_length = snprintf(filename, sizeof(filename), "%s.sdfits",
                                          filename_stem.c_str());
     if (filename_length < 0 ||
         static_cast<size_t>(filename_length) >= sizeof(filename))
@@ -50,11 +39,7 @@ int sdfits::sdfits_create()
         return 1;
     }
     if (access(filename, F_OK) == 0)
-    {
-        fprintf(stderr, "Refusing to overwrite existing SDFITS file '%s'.\n",
-                filename);
-        return 1;
-    }
+        return SDFITS_OUTPUT_EXISTS;
 
     // Create basic FITS file from our template
     // char *vegas_dir = getenv("VEGAS_DIR");
@@ -179,6 +164,8 @@ int sdfits::sdfits_create()
     // fits_update_key(fptr, TSTRING, "TDIM20", ctmp, NULL, &status);
 
     fits_flush_file(fptr, &status);
+    if (!status)
+        new_file = 0;
 
     return status;
 }
@@ -199,7 +186,9 @@ int sdfits::sdfits_write_subint()
             printf("Closing file '%s'\n", filename);
             fits_close_file(fptr, &status);
         }
-        sdfits_create();
+        const int create_status = sdfits_create();
+        if (create_status != 0)
+            return create_status;
     }
     row = rownum;
     temp_str = data_columns.object;

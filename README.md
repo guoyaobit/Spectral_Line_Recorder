@@ -28,8 +28,10 @@ need their actual receiver setup; the RF label change does not rewrite old files
 With a system controller, set `Observation_ID` in Recorder and every processing
 node to the same value. Spectral-line and continuum modes write beneath
 `Storage_folder/<Observation_ID>/`; Recorder does not alter the ID or append a
-timestamp. The controller must write a new ID before each new observation. An
-existing directory is reused so Recorder may restart during that observation.
+timestamp. The controller must write a new ID before each new observation.
+If a spectral-line or continuum output file already exists, Recorder logs a
+warning once and skips that output for the rest of the run. The existing file
+is preserved.
 The ID must contain 1-64 ASCII letters, digits, `.`, `_`, or `-`, and must not
 be `.` or `..`. Incoming messages are accepted only when the CRC32C value in
 `spectrum_header.obs_id` matches this configured ID.

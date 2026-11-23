@@ -24,14 +24,12 @@ bool ContinuumFits::create(const std::string &filename,
     m_row = 0;
     m_integration_time_sec = integration_time_sec;
 
-    std::string output_name = filename;
-
-    if (output_name.empty() || output_name[0] != '!')
-        output_name = "!" + output_name;
+    if (filename.empty() || filename.front() == '!')
+        return false;
 
     fits_create_file(
         &m_fptr,
-        output_name.c_str(),
+        filename.c_str(),
         &m_status);
 
     if (m_status)

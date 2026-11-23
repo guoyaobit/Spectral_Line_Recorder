@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <cstring>
 #include <deque>
+#include <filesystem>
 #include <functional>
 #include <iterator>
 #include <map>
@@ -323,6 +324,13 @@ void write_spectrum_frame(const CompletedSpectrum &result) {
       if (!cfitsio_supports_parallel_io())
         cfitsio_lock.lock();
       const int create_status = writer.sdfits_create();
+      if (create_status == SDFITS_OUTPUT_EXISTS) {
+        cfg.logger_->warn(
+            "SDFITS already exists: {}. Skipping this output for this run.",
+            writer.filename);
+        writers.emplace(file_key, nullptr);
+        return;
+      }
       if (create_status != 0) {
         cfg.logger_->error(
             "Failed to create SDFITS file for subband {}, window {}, beam "
@@ -341,6 +349,8 @@ void write_spectrum_frame(const CompletedSpectrum &result) {
     }
   }
 
+  if (!writer_state)
+    return;
   std::lock_guard<std::mutex> writer_lock(writer_state->mutex);
   std::unique_lock<std::mutex> cfitsio_lock(cfitsio_mutex, std::defer_lock);
   if (!cfitsio_supports_parallel_io())
@@ -427,6 +437,7 @@ struct ContinuumQueue {
   std::mutex mutex;
   std::condition_variable ready;
   std::deque<ContinuumResult> jobs;
+  bool accepting = true;
 } continuum_queue;
 
 struct ContinuumFrame {
@@ -537,6 +548,8 @@ void discard_expired_continuum_frames() {
 bool enqueue_continuum(ContinuumResult result) {
   {
     std::lock_guard<std::mutex> lock(continuum_queue.mutex);
+    if (!continuum_queue.accepting)
+      return false;
     if (continuum_queue.jobs.size() >= CONTINUUM_QUEUE_CAPACITY) {
       static std::atomic<uint64_t> dropped{0};
       const uint64_t count = dropped.fetch_add(1) + 1;
@@ -557,8 +570,18 @@ void continuum_worker() {
   bind_current_thread(writer_cpu_slot(0), "continuum");
   const std::string filename =
       cfg.folder + "/continuum_" + cfg.source_label() + ".fits";
-  if (!continuum_fits.create(filename, 0)) {
-    cfg.logger_->critical("Failed to create continuum FITS: {}", filename);
+  std::error_code path_error;
+  const bool already_exists = std::filesystem::exists(filename, path_error);
+  if (already_exists || !continuum_fits.create(filename, 0)) {
+    if (already_exists)
+      cfg.logger_->warn(
+          "Continuum FITS already exists: {}. Skipping this output for this run.",
+          filename);
+    else
+      cfg.logger_->critical("Failed to create continuum FITS: {}", filename);
+    std::lock_guard<std::mutex> lock(continuum_queue.mutex);
+    continuum_queue.accepting = false;
+    continuum_queue.jobs.clear();
     return;
   }
 
