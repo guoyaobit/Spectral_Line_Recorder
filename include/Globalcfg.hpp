@@ -280,6 +280,8 @@ public:
                 storage_root / Observation_ID;
             std::filesystem::create_directories(observation_folder);
             folder = observation_folder.string();
+            printf("Output directory: %s\n", folder.c_str());
+            fflush(stdout);
             if (!observation_id_configured)
                 logger_->warn(
                     "Observation_ID is not configured; manual mode expects "
