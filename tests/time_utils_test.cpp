@@ -44,8 +44,8 @@ int main()
     const std::string automatic_id =
         automatic_observation_directory_id("M 87", "ON");
     if (!observation_id_is_valid(automatic_id) ||
-        automatic_id.size() != 28 ||
-        automatic_id.substr(automatic_id.size() - 8) != "_M-87_ON")
+        automatic_id.size() != 32 ||
+        automatic_id.substr(0, 8) != "M-87_ON_" || automatic_id.back() != 'Z')
         return 7;
 
     return 0;

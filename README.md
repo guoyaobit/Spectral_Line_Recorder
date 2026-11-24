@@ -38,10 +38,10 @@ be `.` or `..`. Incoming messages are accepted only when the CRC32C value in
 
 Without a controller, omit `Observation_ID`, leave it null, or set it to an
 empty string on both sides. Processing nodes then send `obs_id=0`; Recorder
-accepts `obs_id=0` and creates an ISO-8601 basic UTC directory containing the
+accepts `obs_id=0` and creates a readable UTC directory containing the
 target and pointing state, for example
-`Storage_folder/20260925T143012.317Z_M87_ON/`. Unsafe target-name characters
-are normalized for use in a path. The generated folder name is local storage
+`Storage_folder/M87_ON_2026-09-25_14-30-12.317Z/`. Unsafe target-name characters
+are normalized for use in a path. Long target names are truncated to keep the name within 64 characters, preserving the timestamp and ON/OFF state. The generated folder name is local storage
 metadata and is not sent back to processing nodes.
 
 ```yaml

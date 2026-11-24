@@ -1,6 +1,7 @@
 #pragma once
 
 #include <SpectrumTransport.hpp>
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -74,19 +75,25 @@ inline std::string automatic_observation_directory_id(
     gmtime_r(&value, &utc);
 #endif
     std::ostringstream result;
-    result << std::put_time(&utc, "%Y%m%dT%H%M%S")
+    result << std::put_time(&utc, "%Y-%m-%d_%H-%M-%S")
            << '.' << std::setfill('0') << std::setw(3)
            << milliseconds.count() << 'Z';
 
-    std::string id = result.str();
-    for (const std::string *component : {&object, &state})
-    {
-        if (component->empty() || id.size() >= OBSERVATION_ID_MAX_LENGTH - 1)
-            continue;
-        const std::string safe = observation_directory_component(*component);
-        const size_t available = OBSERVATION_ID_MAX_LENGTH - id.size() - 1;
-        id.push_back('_');
-        id.append(safe, 0, available);
+    const std::string timestamp = result.str();
+    const size_t prefix_capacity = OBSERVATION_ID_MAX_LENGTH - timestamp.size() - 1;
+    // Reserve the complete timestamp and state even when the source is long.
+    std::string safe_state = state.empty() ? "" : observation_directory_component(state);
+    safe_state.resize(std::min(safe_state.size(),
+                              prefix_capacity - (object.empty() ? 0 : 2)));
+    std::string prefix;
+    if (!object.empty()) {
+        const size_t available = prefix_capacity -
+            (safe_state.empty() ? 0 : safe_state.size() + 1);
+        prefix = observation_directory_component(object).substr(0, available);
     }
-    return id;
+    if (!safe_state.empty()) {
+        if (!prefix.empty()) prefix.push_back('_');
+        prefix += safe_state;
+    }
+    return prefix.empty() ? timestamp : prefix + '_' + timestamp;
 }
